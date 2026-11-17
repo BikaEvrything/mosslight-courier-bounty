@@ -159,6 +159,23 @@ const SFX = {
   mapMove: () => tone({ freq: 440, dur: 0.05, type: 'triangle', gain: 0.05 }),
   locked: () => tone({ freq: 140, dur: 0.12, type: 'square', gain: 0.06 }),
   route: () => tone({ freq: 340, end: 260, dur: 0.12, type: 'triangle', gain: 0.07 }),
+  // Regional mechanics: one small, distinct cue pair per grove — a warning
+  // rising note, then a short textural burst. All flow through the same mute
+  // gate as every other cue (sfx() returns early while muted).
+  gustWarn: () => tone({ freq: 190, end: 300, dur: 0.5, type: 'triangle', gain: 0.06 }),
+  gust: () => noise({ dur: 1.1, gain: 0.05, freq: 520 }),
+  gustEnd: () => tone({ freq: 300, end: 190, dur: 0.2, gain: 0.04 }),
+  tideWarn: () => tone({ freq: 120, end: 210, dur: 0.6, type: 'sine', gain: 0.07 }),
+  tide: () => {
+    noise({ dur: 0.9, gain: 0.06, freq: 280 });
+    tone({ freq: 96, end: 72, dur: 0.8, gain: 0.05 });
+  },
+  tideEnd: () => tone({ freq: 210, end: 140, dur: 0.25, gain: 0.04 }),
+  snareWarn: () => tone({ freq: 720, end: 470, dur: 0.55, type: 'triangle', gain: 0.05 }),
+  snare: () => {
+    tone({ freq: 150, end: 60, dur: 0.3, type: 'square', gain: 0.09 });
+    noise({ dur: 0.25, gain: 0.07, freq: 900 });
+  },
 };
 
 /** Plays one named cue; silent until the audio context exists. */

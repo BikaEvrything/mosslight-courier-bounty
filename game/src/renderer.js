@@ -111,6 +111,12 @@ function circle(ctx, x, y, r) {
   ctx.arc(x, y, r, 0, Math.PI * 2);
 }
 
+/** A hex color like '#rrggbb' at an alpha, for region-accent telegraphs. */
+function hexA(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+}
+
 /** Sets the logical 1280x720 transform for the frame. */
 export function setupTransform(ctx, canvas) {
   ctx.setTransform(canvas.width / C.LOGICAL_W, 0, 0, canvas.height / C.LOGICAL_H, 0, 0);
@@ -315,6 +321,12 @@ function drawSeeds(ctx, world, t) {
     ctx.fillStyle = glow;
     circle(ctx, s.x, s.y, 26);
     ctx.fill();
+    // A dark rim just outside the body keeps every seed readable against the
+    // lifted ground and its own glow.
+    ctx.strokeStyle = 'rgba(5,9,18,0.8)';
+    ctx.lineWidth = 2.5;
+    circle(ctx, s.x, s.y, C.SEED.r * pulse + 2);
+    ctx.stroke();
     ctx.fillStyle = p.seed;
     ctx.beginPath();
     ctx.arc(s.x, s.y, C.SEED.r * pulse, -0.4 * Math.PI, 0.75 * Math.PI);
@@ -463,7 +475,12 @@ function drawLantern(ctx, world, t, view) {
     ctx.globalAlpha = blink;
   }
 
-  // The lantern: warm orb inside a little cage with a handle.
+  // The lantern: warm orb inside a little cage with a handle. A dark rim
+  // under the cage separates the silhouette from bright ground below it.
+  ctx.strokeStyle = 'rgba(8,6,3,0.5)';
+  ctx.lineWidth = 3.5;
+  circle(ctx, p.x, p.y, 14.5);
+  ctx.stroke();
   ctx.fillStyle = C.COLORS.goldDeep;
   ctx.strokeStyle = C.COLORS.gold;
   ctx.lineWidth = 2.5;
@@ -563,6 +580,168 @@ function drawSeedPointer(ctx, world) {
   ctx.restore();
 }
 
+// ------------------------------------------------------- biome telegraphs
+
+/** One filled chevron pointing along `dir` (+1 right, -1 left). */
+function drawChevron(ctx, x, y, dir, size, alpha, color) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(x + dir * size, y);
+  ctx.lineTo(x - dir * size * 0.5, y - size * 0.9);
+  ctx.lineTo(x - dir * size * 0.5, y + size * 0.9);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+/** Ambershard: marching chevrons while warning, streaming streaks while blowing. */
+function drawGust(ctx, b, t, p) {
+  const { x0, y0, x1, y1 } = C.FIELD;
+  const midY = (y0 + y1) / 2;
+  if (b.phase === 'warn') {
+    for (let i = 0; i < 3; i++) {
+      const k = (t * 1.4 + i / 3) % 1;
+      const x = (x0 + x1) / 2 + b.dir * (k * 240 - 120);
+      drawChevron(ctx, x, midY, b.dir, 15, 0.25 + 0.5 * Math.sin(k * Math.PI), p.accent);
+    }
+  } else if (b.phase === 'active') {
+    ctx.save();
+    ctx.strokeStyle = p.accent;
+    ctx.lineWidth = 3;
+    ctx.lineCap = 'round';
+    const w = x1 - x0;
+    for (let i = 0; i < 9; i++) {
+      const raw = (t * 300 + i * 167) % w;
+      const x = b.dir > 0 ? x0 + raw : x1 - raw;
+      const y = y0 + 50 + ((i * 97) % (y1 - y0 - 100));
+      ctx.globalAlpha = 0.14 + 0.16 * Math.sin(t * 9 + i * 2.1) ** 2;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x - b.dir * 42, y);
+      ctx.stroke();
+    }
+    // The downwind edge glows: where the wind is pushing you.
+    ctx.globalAlpha = 0.3;
+    ctx.fillStyle = p.accent;
+    ctx.fillRect(b.dir > 0 ? x1 - 10 : x0, y0, 10, y1 - y0);
+    ctx.restore();
+  }
+}
+
+/** Tideglum: a glowing origin edge while warning, a sweeping wall while active. */
+function drawTide(ctx, b, t, p) {
+  const { x0, y0, x1, y1 } = C.FIELD;
+  const m = b.mechanic;
+  const travel = -b.side; // the direction the wall moves
+  const midY = (y0 + y1) / 2;
+  if (b.phase === 'warn') {
+    ctx.save();
+    // The origin edge glows, brightest at the field's border, fading inward.
+    const g = ctx.createLinearGradient(
+      b.side > 0 ? x1 : x0,
+      0,
+      b.side > 0 ? x1 - 14 : x0 + 14,
+      0,
+    );
+    g.addColorStop(0, p.seedGlow);
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(b.side > 0 ? x1 - 14 : x0, y0, 14, y1 - y0);
+    ctx.restore();
+    for (let i = 0; i < 3; i++) {
+      const k = (t * 1.4 + i / 3) % 1;
+      const x = (x0 + x1) / 2 + travel * (k * 240 - 120);
+      drawChevron(ctx, x, midY, travel, 15, 0.25 + 0.5 * Math.sin(k * Math.PI), p.accent);
+    }
+  } else if (b.phase === 'active') {
+    ctx.save();
+    const th = m.thickness;
+    const bx = b.side > 0 ? b.wallX : b.wallX - th; // band start x
+    const ba = Math.max(x0, bx);
+    const bb = Math.min(x1, bx + th);
+    if (bb > ba) {
+      // Band: bright at the leading edge, fading into its trailing tail.
+      const g = ctx.createLinearGradient(bx, 0, bx + th, 0);
+      g.addColorStop(0, hexA(p.accent, b.side > 0 ? 0.6 : 0.15));
+      g.addColorStop(1, hexA(p.accent, b.side > 0 ? 0.15 : 0.6));
+      ctx.fillStyle = g;
+      ctx.fillRect(ba, y0, bb - ba, y1 - y0);
+    }
+    // Trailing wash behind the band, on the origin side.
+    const tail = 120;
+    const tx = b.side > 0 ? bx + th : bx - tail;
+    const tg = ctx.createLinearGradient(tx, 0, tx + tail, 0);
+    tg.addColorStop(0, hexA(p.accent, b.side > 0 ? 0.18 : 0));
+    tg.addColorStop(1, hexA(p.accent, b.side > 0 ? 0 : 0.18));
+    const ta = Math.max(x0, tx);
+    const tb = Math.min(x1, tx + tail);
+    if (tb > ta) {
+      ctx.fillStyle = tg;
+      ctx.fillRect(ta, y0, tb - ta, y1 - y0);
+    }
+    // The bright leading edge itself.
+    if (b.wallX >= x0 - 2 && b.wallX <= x1 + 2) {
+      ctx.strokeStyle = '#eafcff';
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      ctx.moveTo(b.wallX, y0);
+      ctx.lineTo(b.wallX, y1);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+/** Umbral Crown: a violet ring with a countdown, then a brief eruption. */
+function drawSnare(ctx, b, t, p) {
+  const m = b.mechanic;
+  if (b.phase === 'warn') {
+    const k = 1 - Math.max(0, b.timer) / m.warn; // 0 → 1 across the warning
+    ctx.save();
+    ctx.fillStyle = hexA(p.accent, 0.1 + 0.16 * k);
+    circle(ctx, b.x, b.y, b.r);
+    ctx.fill();
+    ctx.strokeStyle = '#e6d5ff';
+    ctx.globalAlpha = 0.55 + 0.4 * k;
+    ctx.lineWidth = 4;
+    ctx.setLineDash([12, 10]);
+    circle(ctx, b.x, b.y, b.r);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // A shrinking inner ring counts the time left to step out.
+    ctx.strokeStyle = '#ffffff';
+    ctx.globalAlpha = 0.85;
+    ctx.lineWidth = 3;
+    circle(ctx, b.x, b.y, Math.max(2, b.r * (1 - k)));
+    ctx.stroke();
+    ctx.restore();
+  } else if (b.phase === 'flash') {
+    const k = 1 - Math.max(0, b.timer) / m.flash;
+    ctx.save();
+    ctx.fillStyle = hexA(p.accent, 0.5 * (1 - k));
+    circle(ctx, b.x, b.y, b.r);
+    ctx.fill();
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 5;
+    ctx.globalAlpha = 1 - k;
+    circle(ctx, b.x, b.y, b.r * (1 + 0.35 * k));
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+/** Draws the region's active mechanic telegraph, if one is on screen. */
+function drawBiomeField(ctx, world, t) {
+  const b = world.biome;
+  if (!b || b.phase === 'idle') return;
+  const p = pal(world);
+  if (b.id === 'gust') drawGust(ctx, b, t, p);
+  else if (b.id === 'tide') drawTide(ctx, b, t, p);
+  else drawSnare(ctx, b, t, p);
+}
+
 function drawParticles(ctx, effects) {
   for (const p of effects.parts) {
     ctx.globalAlpha = Math.max(0, Math.min(1, p.life / p.maxLife));
@@ -584,16 +763,49 @@ function drawTrail(ctx, effects) {
 }
 
 function drawVignette(ctx) {
-  const l = ctx.createLinearGradient(0, 0, 130, 0);
-  l.addColorStop(0, 'rgba(2,5,12,0.55)');
+  // Soft edge shading only: heavy vignettes swallowed the field edges.
+  const l = ctx.createLinearGradient(0, 0, 110, 0);
+  l.addColorStop(0, 'rgba(2,5,12,0.32)');
   l.addColorStop(1, 'rgba(2,5,12,0)');
   ctx.fillStyle = l;
-  ctx.fillRect(0, 0, 130, C.LOGICAL_H);
-  const r = ctx.createLinearGradient(C.LOGICAL_W - 130, 0, C.LOGICAL_W, 0);
+  ctx.fillRect(0, 0, 110, C.LOGICAL_H);
+  const r = ctx.createLinearGradient(C.LOGICAL_W - 110, 0, C.LOGICAL_W, 0);
   r.addColorStop(0, 'rgba(2,5,12,0)');
-  r.addColorStop(1, 'rgba(2,5,12,0.55)');
+  r.addColorStop(1, 'rgba(2,5,12,0.32)');
   ctx.fillStyle = r;
-  ctx.fillRect(C.LOGICAL_W - 130, 0, 130, C.LOGICAL_H);
+  ctx.fillRect(C.LOGICAL_W - 110, 0, 110, C.LOGICAL_H);
+}
+
+/**
+ * The playfield frame: a quiet accent border and bright corner ticks so the
+ * field edges and the HUD band above them separate at any size.
+ */
+function drawFieldFrame(ctx, world) {
+  const p = pal(world);
+  const { x0, y0, x1, y1 } = C.FIELD;
+  ctx.save();
+  ctx.strokeStyle = p.accent;
+  ctx.globalAlpha = 0.26;
+  ctx.lineWidth = 2;
+  rrect(ctx, x0 - 7, y0 - 7, x1 - x0 + 14, y1 - y0 + 14, 16);
+  ctx.stroke();
+  ctx.globalAlpha = 0.8;
+  ctx.lineWidth = 4;
+  ctx.lineCap = 'round';
+  const tick = 24;
+  for (const [cx, cy, sx, sy] of [
+    [x0 - 7, y0 - 7, 1, 1],
+    [x1 + 7, y0 - 7, -1, 1],
+    [x0 - 7, y1 + 7, 1, -1],
+    [x1 + 7, y1 + 7, -1, -1],
+  ]) {
+    ctx.beginPath();
+    ctx.moveTo(cx + sx * tick, cy);
+    ctx.lineTo(cx, cy);
+    ctx.lineTo(cx, cy + sy * tick);
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 /** Renders the scenery and entities pass (chunky, low-res buffer). */
@@ -611,12 +823,14 @@ export function renderWorld(ctx, world, view) {
   drawSeeds(ctx, world, t);
   drawBloom(ctx, world, t);
   for (const b of world.brambles) drawBramble(ctx, b, t);
+  drawBiomeField(ctx, world, t);
   drawTrail(ctx, view.effects);
   drawLantern(ctx, world, t, view);
   drawFlareRing(ctx, world, view);
   drawSeedPointer(ctx, world);
   drawParticles(ctx, view.effects);
   drawFireflies(ctx, world, t, view);
+  drawFieldFrame(ctx, world);
   drawVignette(ctx);
 
   ctx.restore();
@@ -760,6 +974,7 @@ function drawHUD(ctx, world, t, view) {
   ctx.fillText(ready ? 'DASH READY' : 'DASH', 92, C.LOGICAL_H - 40);
 
   drawEmberMeter(ctx, world, t, view.reducedMotion);
+  drawBiomeBanner(ctx, world, t, view);
 
   // Touch buttons for dash and flare.
   if (view.touch) {
@@ -782,6 +997,12 @@ function drawHUD(ctx, world, t, view) {
     ctx.fillStyle = C.COLORS.dim;
     ctx.font = '400 17px system-ui, sans-serif';
     ctx.fillText('Graze the brambles to charge the ember — a full ember flares.', 640, 344);
+    // Each later grove also speaks its own field mechanic once, up front.
+    if (world.region.mechanic) {
+      ctx.fillStyle = p.accent;
+      ctx.font = '600 16px system-ui, sans-serif';
+      ctx.fillText(world.region.mechanic.tell, 640, 374);
+    }
     ctx.globalAlpha = 1;
   }
 }
@@ -810,6 +1031,50 @@ function drawCircleActionButton(ctx, b, label, charge, t) {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(label, b.x, b.y);
+  ctx.restore();
+}
+
+/**
+ * The regional mechanic's concise banner, in the HUD band where it never
+ * covers the playfield: the tell while it warns, a short status while it acts.
+ */
+function drawBiomeBanner(ctx, world, t, view) {
+  const b = world.biome;
+  if (!b) return;
+  const warn = b.phase === 'warn';
+  const acting = b.phase === 'active' || b.phase === 'flash';
+  if (!warn && !acting) return;
+  const p = pal(world);
+  let label = '';
+  let sub = null;
+  if (b.id === 'gust') {
+    label = warn
+      ? `SHARD GUST ${b.dir > 0 ? '→' : '←'}`
+      : `HOLD AGAINST THE WIND ${b.dir > 0 ? '→' : '←'}`;
+    if (warn) sub = 'Steer against the shove';
+  } else if (b.id === 'tide') {
+    label = warn
+      ? `GLUM TIDE ${-b.side > 0 ? '→' : '←'}`
+      : `TIDE SWEEPING THE GROVE ${-b.side > 0 ? '→' : '←'}`;
+    if (warn) sub = 'Outrun it or dash through';
+  } else {
+    label = warn ? 'UMBRA SNARE' : 'SNARE ERUPTING';
+    if (warn) sub = 'Leave the violet ring';
+  }
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'alphabetic';
+  const pulse = warn && !view.reducedMotion ? 0.8 + 0.2 * Math.sin(t * 6) : 0.95;
+  ctx.globalAlpha = pulse;
+  ctx.fillStyle = warn ? p.accent : C.COLORS.goldBright;
+  ctx.font = '800 19px system-ui, sans-serif';
+  ctx.fillText(label, 640, 84);
+  if (sub) {
+    ctx.globalAlpha = 0.9;
+    ctx.fillStyle = C.COLORS.ink;
+    ctx.font = '400 13px system-ui, sans-serif';
+    ctx.fillText(sub, 640, 103);
+  }
   ctx.restore();
 }
 
@@ -1060,14 +1325,20 @@ function drawMap(ctx, world, t, view) {
   // Selected region panel.
   const region = REGIONS[sel];
   const rec = camp.regions[sel];
-  card(ctx, 340, 580, 600, 74);
+  card(ctx, 340, 568, 600, 92);
   ctx.textAlign = 'left';
   ctx.fillStyle = region.colors.accent;
   ctx.font = '800 19px system-ui, sans-serif';
-  ctx.fillText(`${sel + 1}. ${region.name}`, 364, 610);
+  ctx.fillText(`${sel + 1}. ${region.name}`, 364, 598);
   ctx.fillStyle = C.COLORS.dim;
   ctx.font = '400 14px system-ui, sans-serif';
-  ctx.fillText(region.tag, 364, 634);
+  ctx.fillText(region.tag, 364, 622);
+  // The grove's field mechanic, so the choice of region is an informed one.
+  if (region.mechanic) {
+    ctx.fillStyle = region.colors.accentDim;
+    ctx.font = '600 13px system-ui, sans-serif';
+    ctx.fillText(`FIELD — ${region.mechanic.name}`, 364, 646);
+  }
   ctx.textAlign = 'right';
   ctx.fillStyle = rec.cleared ? C.COLORS.gold : C.COLORS.goldBright;
   ctx.font = '700 15px system-ui, sans-serif';
@@ -1144,8 +1415,10 @@ function drawResults(ctx, world, t, view) {
     ['Hits taken', `${sum.hitsTaken}`],
     ['Time bonus', `+${sum.timeBonus}`],
   ];
+  // The grove's own mechanic stat, right after the near misses.
+  if (sum.biomeLabel) rows.splice(5, 0, [sum.biomeLabel, String(sum.biome)]);
   ctx.textAlign = 'left';
-  let y = 262;
+  let y = 256;
   for (const [k, v] of rows) {
     ctx.font = '400 16px system-ui, sans-serif';
     ctx.fillStyle = C.COLORS.dim;
@@ -1155,7 +1428,7 @@ function drawResults(ctx, world, t, view) {
     ctx.textAlign = 'right';
     ctx.fillText(v, 906, y);
     ctx.textAlign = 'left';
-    y += 30;
+    y += 27;
   }
   ctx.textBaseline = 'alphabetic';
   const buttons = getButtons(world.phase, { next: view.nextAvailable });

@@ -8,6 +8,7 @@
 import { createRng } from './rng.js';
 import * as C from './config.js';
 import { REGIONS, clampRegionIndex } from './regions.js';
+import { initBiome, updateBiome } from './biomes.js';
 
 export const PHASE = {
   MENU: 'menu',
@@ -35,6 +36,7 @@ function freshStats() {
     timeBonus: 0,
     flares: 0,
     stilled: 0,
+    biome: 0, // the region's own mechanic stat (gusts / tides / snares)
   };
 }
 
@@ -89,6 +91,7 @@ export function createWorld(seed = 1, regionIdx = 0) {
     },
     seeds: [],
     brambles: [],
+    biome: null, // the regional field mechanic state; set in startRun
     stats: freshStats(),
     events: [],
   };
@@ -125,6 +128,8 @@ export function runSummary(world) {
     hearts: world.hearts,
     regionIdx: world.regionIdx,
     regionName: world.region.name,
+    biome: world.stats.biome,
+    biomeLabel: world.biome ? world.biome.mechanic.statLabel : null,
   };
 }
 
@@ -222,6 +227,7 @@ export function startRun(world) {
   world.seeds = [];
   world.brambles = [];
   world.bloom = null;
+  world.biome = initBiome(world);
   for (let i = 0; i < region.seeds; i++) {
     const pos = fairPosition(world, {
       minPlayer: C.SEED.minPlayerDist,
@@ -262,6 +268,8 @@ export function stepWorld(world, input, dt) {
   updateBrambles(world, step, events);
   if (world.phase !== PHASE.RUNNING) return events; // a lost run stops changing
   updateBloom(world, step, events);
+  updateBiome(world, step, events, damagePlayer);
+  if (world.phase !== PHASE.RUNNING) return events; // a lethal mechanic ends the step here
 
   if (world.combo > 0) {
     world.comboTimer -= step;
@@ -437,25 +445,8 @@ function updateBrambles(world, dt, events) {
     const hitR = b.r + C.PLAYER.r - C.BRAMBLE.contact;
     const d = Math.hypot(b.x - p.x, b.y - p.y);
     if (d < hitR) {
-      if (p.invuln <= 0) {
-        world.hearts--;
-        world.stats.hitsTaken++;
-        world.combo = 0;
-        world.comboTimer = 0;
-        p.invuln = C.PLAYER.hitInvuln;
-        const nx = (p.x - b.x) / (d || 1);
-        const ny = (p.y - b.y) / (d || 1);
-        p.vx = nx * 260;
-        p.vy = ny * 260;
-        events.push({ type: 'hit', x: p.x, y: p.y, hearts: world.hearts });
-        if (world.hearts <= 0) {
-          world.hearts = 0;
-          world.phase = PHASE.LOST;
-          world.loseReason = 'hearts';
-          events.push({ type: 'lose', reason: 'hearts', x: p.x, y: p.y });
-          return;
-        }
-      }
+      damagePlayer(world, b.x, b.y, events);
+      if (world.phase !== PHASE.RUNNING) return;
     } else if (!b.nearMissed && d < hitR + C.NEAR_MISS.reach) {
       // A close pass is worth +35 once per hazard per run — and it feeds the
       // ember, so grazing charges the flare.
@@ -474,6 +465,37 @@ function updateBrambles(world, dt, events) {
       if (!wasCharged && world.ember >= C.EMBER.max) events.push({ type: 'emberFull', x: p.x, y: p.y });
     }
   }
+}
+
+/**
+ * The one hurt rule every hazard shares, brambles and regional mechanics
+ * alike: a contact costs exactly one heart, breaks the combo, knocks the
+ * courier back and opens a fixed invulnerability window — so no hazard can
+ * ever deal double damage. It refuses to act while the courier is invulnerable
+ * (which is what makes dashing through danger real counterplay) and returns
+ * whether damage landed.
+ */
+function damagePlayer(world, srcX, srcY, events) {
+  const p = world.player;
+  if (p.invuln > 0 || world.phase !== PHASE.RUNNING) return false;
+  world.hearts--;
+  world.stats.hitsTaken++;
+  world.combo = 0;
+  world.comboTimer = 0;
+  p.invuln = C.PLAYER.hitInvuln;
+  const dx = p.x - srcX;
+  const dy = p.y - srcY;
+  const l = Math.hypot(dx, dy) || 1;
+  p.vx = (dx / l) * 260;
+  p.vy = (dy / l) * 260;
+  events.push({ type: 'hit', x: p.x, y: p.y, hearts: world.hearts });
+  if (world.hearts <= 0) {
+    world.hearts = 0;
+    world.phase = PHASE.LOST;
+    world.loseReason = 'hearts';
+    events.push({ type: 'lose', reason: 'hearts', x: p.x, y: p.y });
+  }
+  return true;
 }
 
 function updateBloom(world, dt, events) {

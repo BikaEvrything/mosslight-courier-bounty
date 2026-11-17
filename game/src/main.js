@@ -399,19 +399,55 @@ function setupShot(mode) {
     world = createWorld(1337, view.mapSel);
     world.phase = PHASE.MAP;
   } else if (mode === 'play') {
-    world = createWorld(1337, 1); // Ambershard Wastes, mid-route
+    // Tideglum Depths mid-sweep, arranged for a readable mechanic frame: the
+    // real simulation is stepped with the courier parked and shielded until
+    // the glum tide's wall is sweeping, then the wall is placed mid-sweep
+    // (leading edge at the field's center) and the lantern is staged just
+    // ahead of it. Review fixture only — never evidence of play.
+    world = createWorld(1337, 2);
     startRun(world);
     dispatch(world.events);
-    for (let i = 0; i < 210; i++) {
-      const target = nearestSeed(world);
-      const ax = target ? Math.max(-1, Math.min(1, (target.x - world.player.x) / 120)) : 0;
-      const ay = target ? Math.max(-1, Math.min(1, (target.y - world.player.y) / 120)) : 0;
-      const events = stepWorld(world, { axisX: ax, axisY: ay, dash: i === 70, flare: false }, STEP);
-      dispatch(events);
+    // Wait out the tide's seeded first delay (~10 s) without playing: parked
+    // and shielded, so no hearts can be lost and no seeds are collected.
+    let guard = 0;
+    while (
+      world.phase === PHASE.RUNNING &&
+      !(world.biome && world.biome.phase === 'active') &&
+      guard++ < 900
+    ) {
+      world.player.invuln = 999;
+      dispatch(stepWorld(world, { axisX: 0, axisY: 0, dash: false, flare: false }, STEP));
       if (!reducedMotion) pushTrail(effects, world.player.x, world.player.y);
+    }
+    if (world.biome && world.biome.phase === 'active') {
+      const b = world.biome;
+      // Arranged: the wall mid-sweep. The short steering pass below moves it
+      // another 80 px, so the leading edge is arranged 80 px upwind of the
+      // field's center and lands exactly there in the frozen frame.
+      b.wallX = (C.FIELD.x0 + C.FIELD.x1) / 2 + b.side * 80;
+      // Roamers pinned on the wall's trailing side, clear of the sweep.
+      const trailX = b.side > 0 ? C.FIELD.x1 - 90 : C.FIELD.x0 + 90;
+      world.brambles.forEach((h, i) => pinBramble(h, trailX, C.FIELD.y0 + 110 + (i % 3) * 220));
+      // The lantern staged 320 px ahead of the leading edge, inside the field.
+      world.player.x = Math.max(
+        C.FIELD.x0 + 40,
+        Math.min(C.FIELD.x1 - 40, b.wallX + -b.side * 320),
+      );
+      world.player.y = (C.FIELD.y0 + C.FIELD.y1) / 2;
+      // A short real steering pass so the frame shows play (trail, HUD count):
+      // the wall closes 80 px and the courier moves at most ~117 px against a
+      // 320 px staging gap, so no contact happens in this window.
+      for (let i = 0; i < 20; i++) {
+        world.player.invuln = 999;
+        const target = nearestSeed(world);
+        const ax = target ? Math.max(-1, Math.min(1, (target.x - world.player.x) / 120)) : 0;
+        const ay = target ? Math.max(-1, Math.min(1, (target.y - world.player.y) / 120)) : 0;
+        dispatch(stepWorld(world, { axisX: ax, axisY: ay, dash: false, flare: false }, STEP));
+        if (!reducedMotion) pushTrail(effects, world.player.x, world.player.y);
+      }
       // Fixture guard: keep the mid-run shot playable rather than near-death.
       if (world.hearts < 2) world.hearts = 2;
-      if (world.phase !== PHASE.RUNNING) break;
+      world.player.invuln = 0; // the frozen frame must not blink the lantern
     }
     // Arranged: a partially charged ember so the meter reads in the shot.
     world.ember = 66;

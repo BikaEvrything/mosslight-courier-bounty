@@ -105,6 +105,33 @@ export function eventBurst(effects, ev, reducedMotion) {
       burst(effects, ev.x, ev.y, { count: 20, color: '#ffcf6b', speed: 210, life: 0.8, size: 3.2 });
       effects.shake = 8;
       break;
+    // Regional mechanics: feedback only at the moment each mechanic acts.
+    // The warnings rely on their field telegraphs and HUD banner instead, so
+    // nothing extra competes with them.
+    case 'gust':
+      burst(effects, ev.x, ev.y, {
+        count: 12,
+        color: '#ffab4d',
+        speed: 200,
+        life: 0.45,
+        size: 2.6,
+        dir: Math.atan2(0, ev.dir || 1),
+        spread: 0.9,
+      });
+      break;
+    case 'tide':
+      burst(effects, ev.x, ev.y, { count: 10, color: '#6fd6ff', speed: 110, life: 0.6, size: 2.4 });
+      break;
+    case 'snare':
+      burst(effects, ev.x, ev.y, {
+        count: ev.hit ? 18 : 10,
+        color: '#c9a6ff',
+        speed: ev.hit ? 220 : 120,
+        life: 0.6,
+        size: 2.8,
+      });
+      if (ev.hit) effects.shake = 5;
+      break;
     default:
       break;
   }
