@@ -1,0 +1,223 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "opencode/glm-5.3-flash-free",
+  "share": "disabled",
+  "lsp": false,
+  "formatter": false,
+  "snapshots": false,
+  "providers": {
+    "opencode": {
+      "models": {
+        "beam-free": {
+          "disabled": true
+        },
+        "big-pickle": {
+          "disabled": true
+        },
+        "claude-fable-5-2": {
+          "disabled": true
+        },
+        "claude-haiku-5-5": {
+          "disabled": true
+        },
+        "claude-opus-5-5": {
+          "disabled": true
+        },
+        "claude-sonnet-5-5": {
+          "disabled": true
+        },
+        "deepseek-v4-pro": {
+          "disabled": true
+        },
+        "deepseek-v4.1-flash": {
+          "disabled": true
+        },
+        "deepseek-v4.1-flash-free": {
+          "disabled": true
+        },
+        "flint-40b-free": {
+          "disabled": true
+        },
+        "gemini-3.1-pro": {
+          "disabled": true
+        },
+        "gemini-3.5-flash-lite": {
+          "disabled": true
+        },
+        "gemini-3.8-flash": {
+          "disabled": true
+        },
+        "gemini-4-hydrogen": {
+          "disabled": true
+        },
+        "glm-5.3": {
+          "disabled": true
+        },
+        "glm-5.3-flash": {
+          "disabled": true
+        },
+        "glm-5.3-flash-free": {
+          "disabled": false
+        },
+        "gpt-5.3-codex": {
+          "disabled": true
+        },
+        "gpt-5.3-codex-spark": {
+          "disabled": true
+        },
+        "gpt-5.4-mini": {
+          "disabled": true
+        },
+        "gpt-5.4-nano": {
+          "disabled": true
+        },
+        "gpt-5.5": {
+          "disabled": true
+        },
+        "gpt-5.5-pro": {
+          "disabled": true
+        },
+        "gpt-5.6-terra": {
+          "disabled": true
+        },
+        "gpt-6-astra": {
+          "disabled": true
+        },
+        "gpt-6-luna": {
+          "disabled": true
+        },
+        "gpt-6.1-sol": {
+          "disabled": true
+        },
+        "grok-4.7": {
+          "disabled": true
+        },
+        "grok-build-0.1": {
+          "disabled": true
+        },
+        "hy4-flash-free": {
+          "disabled": true
+        },
+        "iceman-free": {
+          "disabled": true
+        },
+        "inkling-2-small-free": {
+          "disabled": true
+        },
+        "kimi-k2.7-code": {
+          "disabled": true
+        },
+        "kimi-k3": {
+          "disabled": true
+        },
+        "longcat-2.5-free": {
+          "disabled": true
+        },
+        "mimo-v2.6-flash-free": {
+          "disabled": true
+        },
+        "minimax-m3": {
+          "disabled": true
+        },
+        "mistral-large-4": {
+          "disabled": true
+        },
+        "muse-ember-1.0": {
+          "disabled": true
+        },
+        "nemotron-3.5-lightning-free": {
+          "disabled": true
+        },
+        "nemotron-3.5-super-vl-free": {
+          "disabled": true
+        },
+        "qwen3.8-flash": {
+          "disabled": true
+        }
+      }
+    }
+  },
+  "agents": {
+    "build": {
+      "model": "opencode/glm-5.3-flash-free",
+      "steps": 40
+    },
+    "plan": {
+      "model": "opencode/glm-5.3-flash-free"
+    },
+    "general": {
+      "model": "opencode/glm-5.3-flash-free"
+    },
+    "explore": {
+      "model": "opencode/glm-5.3-flash-free"
+    },
+    "title": {
+      "model": "opencode/glm-5.3-flash-free"
+    },
+    "summary": {
+      "model": "opencode/glm-5.3-flash-free"
+    },
+    "compaction": {
+      "model": "opencode/glm-5.3-flash-free"
+    }
+  },
+  "policies": [
+    {
+      "action": "provider.use",
+      "resource": "*",
+      "effect": "deny"
+    },
+    {
+      "action": "provider.use",
+      "resource": "opencode",
+      "effect": "allow"
+    },
+    {
+      "action": "tool.use",
+      "resource": "external_directory:*",
+      "effect": "deny"
+    },
+    {
+      "action": "tool.use",
+      "resource": "subagent:*",
+      "effect": "deny"
+    },
+    {
+      "action": "tool.use",
+      "resource": "webfetch:*",
+      "effect": "deny"
+    },
+    {
+      "action": "tool.use",
+      "resource": "websearch:*",
+      "effect": "deny"
+    }
+  ],
+  "permissions": [
+    {
+      "action": "*",
+      "resource": "*",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": "*",
+      "effect": "allow"
+    },
+    {
+      "action": "glob",
+      "resource": "*",
+      "effect": "allow"
+    },
+    {
+      "action": "grep",
+      "resource": "*",
+      "effect": "allow"
+    },
+    {
+      "action": "edit",
+      "resource": "*",
+      "effect": "allow"
+    }
+  ]
+}
