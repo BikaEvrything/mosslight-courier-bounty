@@ -1,12 +1,20 @@
 // Mosslight Courier — canvas renderer.
 //
+// Split into two passes so screenshots read at thumbnail size:
+//   renderWorld — scenery and entities, drawn chunky (the caller renders this
+//                 into a low-resolution buffer that is blitted back with
+//                 image smoothing off, giving a crisp pixel-inspired look);
+//   renderUI    — HUD, route map, results and pause screens at full logical
+//                 resolution, so every word stays crisp and readable.
+//
 // Every visual is drawn here with vector paths: no images, no fonts fetched,
-// no external assets. The logical canvas is 1280x720 and the transform is set
-// once per frame by setupTransform, so the same drawing serves every display.
+// no external assets. The logical canvas is 1280x720.
 
 import * as C from './config.js';
 import { createRng } from './rng.js';
 import { PHASE, gradeFor, runSummary } from './world.js';
+import { REGIONS } from './regions.js';
+import { totalCleared } from './campaign.js';
 
 // ---------------------------------------------------------- static scenery
 // Fixed-seed tables so the scenery is identical on every machine and in
@@ -40,7 +48,7 @@ const GLOW_PATCHES = Array.from({ length: 10 }, () => ({
   x: sceneryRng.range(90, 1190),
   y: sceneryRng.range(560, 706),
   r: sceneryRng.range(34, 84),
-  teal: sceneryRng.chance(0.6),
+  flip: sceneryRng.chance(0.6),
 }));
 
 const TRUNKS = [
@@ -50,13 +58,37 @@ const TRUNKS = [
   { x: 1236, w: 48, lean: -0.03, canopy: 260 },
 ];
 
+const SHARDS = [
+  { x: 40, w: 76, h: 340, lean: 30 },
+  { x: 210, w: 44, h: 200, lean: -20 },
+  { x: 1064, w: 60, h: 300, lean: -30 },
+  { x: 1176, w: 84, h: 410, lean: 36 },
+  { x: 610, w: 38, h: 170, lean: 14 },
+];
+
+const THORNS = [
+  { x: 30, w: 64, h: 390, j: 30 },
+  { x: 150, w: 42, h: 240, j: 22 },
+  { x: 1096, w: 56, h: 330, j: 26 },
+  { x: 1196, w: 74, h: 430, j: 34 },
+  { x: 894, w: 36, h: 180, j: 18 },
+];
+
+const KELPS = Array.from({ length: 10 }, () => ({
+  x: sceneryRng.range(40, 1240),
+  h: sceneryRng.range(170, 350),
+  ph: sceneryRng.range(0, Math.PI * 2),
+  sp: sceneryRng.range(0.5, 1.0),
+  amp: sceneryRng.range(10, 26),
+  w: sceneryRng.range(5, 9),
+  far: sceneryRng.chance(0.5),
+}));
+
 const CRATERS = [
   { dx: -18, dy: -12, r: 12 },
   { dx: 14, dy: 6, r: 9 },
   { dx: -4, dy: 22, r: 7 },
 ];
-
-const MOON = { x: 1032, y: 132, r: 62 };
 
 function rrect(ctx, x, y, w, h, r) {
   if (typeof ctx.roundRect === 'function') {
@@ -84,96 +116,167 @@ export function setupTransform(ctx, canvas) {
   ctx.setTransform(canvas.width / C.LOGICAL_W, 0, 0, canvas.height / C.LOGICAL_H, 0, 0);
 }
 
-// ---------------------------------------------------------------- scenery
+/** The active region's palette kit (falls back to the hollow). */
+function pal(world) {
+  return (REGIONS[world.regionIdx] ?? REGIONS[0]).colors;
+}
 
-function drawSky(ctx, t, view) {
+function regionOf(world) {
+  return REGIONS[world.regionIdx] ?? REGIONS[0];
+}
+
+// ---------------------------------------------------------------- world pass
+
+function drawSky(ctx, world, t, view) {
+  const p = pal(world);
   const g = ctx.createLinearGradient(0, 0, 0, C.LOGICAL_H);
-  g.addColorStop(0, C.COLORS.skyTop);
-  g.addColorStop(1, C.COLORS.skyBottom);
+  g.addColorStop(0, p.skyTop);
+  g.addColorStop(1, p.skyBottom);
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, C.LOGICAL_W, C.LOGICAL_H);
 
   for (const s of STARS) {
     const a = view.reducedMotion ? 0.55 : 0.3 + 0.45 * (0.5 + 0.5 * Math.sin(t * 1.6 + s.tw));
     ctx.globalAlpha = a;
-    ctx.fillStyle = C.COLORS.star;
+    ctx.fillStyle = p.star;
     circle(ctx, s.x, s.y, s.r);
     ctx.fill();
   }
   ctx.globalAlpha = 1;
 
-  // Moon with a wide teal halo and a few soft craters.
-  const halo = ctx.createRadialGradient(MOON.x, MOON.y, MOON.r * 0.4, MOON.x, MOON.y, MOON.r * 3.1);
-  halo.addColorStop(0, C.COLORS.moonHalo);
-  halo.addColorStop(1, 'rgba(110,255,220,0)');
+  // The region's moon or sun with a wide halo and a few soft craters.
+  const halo = ctx.createRadialGradient(p.moonX, p.moonY, p.moonR * 0.4, p.moonX, p.moonY, p.moonR * 3.1);
+  halo.addColorStop(0, p.moonHalo);
+  halo.addColorStop(1, 'rgba(0,0,0,0)');
   ctx.fillStyle = halo;
-  circle(ctx, MOON.x, MOON.y, MOON.r * 3.1);
+  circle(ctx, p.moonX, p.moonY, p.moonR * 3.1);
   ctx.fill();
-  ctx.fillStyle = C.COLORS.moon;
-  circle(ctx, MOON.x, MOON.y, MOON.r);
+  ctx.fillStyle = p.moon;
+  circle(ctx, p.moonX, p.moonY, p.moonR);
   ctx.fill();
-  ctx.fillStyle = C.COLORS.moonCrater;
+  ctx.fillStyle = p.moonCrater;
   for (const c of CRATERS) {
-    circle(ctx, MOON.x + c.dx, MOON.y + c.dy, c.r);
+    circle(ctx, p.moonX + c.dx, p.moonY + c.dy, c.r);
     ctx.fill();
   }
 
-  // Moonlight rays fanning down through the canopy.
-  ctx.fillStyle = C.COLORS.ray;
-  for (let i = 0; i < 4; i++) {
-    const x0 = 880 + i * 64;
-    ctx.beginPath();
-    ctx.moveTo(MOON.x - 30 + i * 22, MOON.y + 20);
-    ctx.lineTo(x0 - 60, C.LOGICAL_H);
-    ctx.lineTo(x0 + 70, C.LOGICAL_H);
-    ctx.closePath();
-    ctx.fill();
+  // Light rays fanning down through the canopy, where the region has them.
+  if (p.ray) {
+    ctx.fillStyle = p.ray;
+    for (let i = 0; i < 4; i++) {
+      const x0 = p.moonX - 152 + i * 64;
+      ctx.beginPath();
+      ctx.moveTo(p.moonX - 30 + i * 22, p.moonY + 20);
+      ctx.lineTo(x0 - 60, C.LOGICAL_H);
+      ctx.lineTo(x0 + 70, C.LOGICAL_H);
+      ctx.closePath();
+      ctx.fill();
+    }
   }
 }
 
-function drawForest(ctx) {
-  for (const tr of TRUNKS) {
-    ctx.fillStyle = C.COLORS.treeFar;
-    ctx.beginPath();
-    ctx.moveTo(tr.x, C.LOGICAL_H);
-    ctx.quadraticCurveTo(tr.x + tr.lean * 300, 420, tr.x + tr.lean * 560, 40);
-    ctx.lineTo(tr.x + tr.w + tr.lean * 560, 40);
-    ctx.quadraticCurveTo(tr.x + tr.w + tr.lean * 300, 420, tr.x + tr.w, C.LOGICAL_H);
-    ctx.closePath();
-    ctx.fill();
-    ctx.fillStyle = C.COLORS.treeNear;
-    circle(ctx, tr.x + tr.w / 2 + tr.lean * 520, 70, tr.canopy);
-    ctx.fill();
+function drawProps(ctx, world, t, view, layer) {
+  const p = pal(world);
+  const kind = regionOf(world).props;
+  const sway = view.reducedMotion ? 0 : Math.sin(t * 0.7) * 2;
+
+  if (layer === 'back') {
+    if (kind === 'trees') {
+      for (const tr of TRUNKS) {
+        ctx.fillStyle = p.propFar;
+        ctx.beginPath();
+        ctx.moveTo(tr.x, C.LOGICAL_H);
+        ctx.quadraticCurveTo(tr.x + tr.lean * 300, 420, tr.x + tr.lean * 560, 40);
+        ctx.lineTo(tr.x + tr.w + tr.lean * 560, 40);
+        ctx.quadraticCurveTo(tr.x + tr.w + tr.lean * 300, 420, tr.x + tr.w, C.LOGICAL_H);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = p.propNear;
+        circle(ctx, tr.x + tr.w / 2 + tr.lean * 520, 70, tr.canopy);
+        ctx.fill();
+      }
+      // Canopy scallop shading the top corners.
+      ctx.fillStyle = p.propNear;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(C.LOGICAL_W, 0);
+      ctx.lineTo(C.LOGICAL_W, 30);
+      ctx.quadraticCurveTo(960, 74, 640, 40);
+      ctx.quadraticCurveTo(320, 6, 0, 52);
+      ctx.closePath();
+      ctx.fill();
+    } else if (kind === 'shards') {
+      for (const s of SHARDS) {
+        ctx.fillStyle = p.propNear;
+        ctx.beginPath();
+        ctx.moveTo(s.x, C.LOGICAL_H);
+        ctx.lineTo(s.x + s.w * 0.5 + s.lean, C.LOGICAL_H - s.h);
+        ctx.lineTo(s.x + s.w, C.LOGICAL_H);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = p.propFar;
+        ctx.beginPath();
+        ctx.moveTo(s.x + s.w * 0.5 + s.lean, C.LOGICAL_H - s.h);
+        ctx.lineTo(s.x + s.w * 0.62 + s.lean * 0.4, C.LOGICAL_H - s.h * 0.45);
+        ctx.lineTo(s.x + s.w * 0.42, C.LOGICAL_H - s.h * 0.45);
+        ctx.closePath();
+        ctx.fill();
+      }
+    } else if (kind === 'thorns') {
+      for (const s of THORNS) {
+        ctx.fillStyle = p.propNear;
+        ctx.beginPath();
+        ctx.moveTo(s.x, C.LOGICAL_H);
+        ctx.lineTo(s.x + s.w * 0.2, C.LOGICAL_H - s.h * 0.35);
+        ctx.lineTo(s.x + s.w * 0.45 - s.j, C.LOGICAL_H - s.h * 0.5);
+        ctx.lineTo(s.x + s.w * 0.55, C.LOGICAL_H - s.h * 0.8);
+        ctx.lineTo(s.x + s.w * 0.5, C.LOGICAL_H - s.h);
+        ctx.lineTo(s.x + s.w * 0.75, C.LOGICAL_H - s.h * 0.55);
+        ctx.lineTo(s.x + s.w * 0.9, C.LOGICAL_H - s.h * 0.3);
+        ctx.lineTo(s.x + s.w, C.LOGICAL_H);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = p.propFar;
+        circle(ctx, s.x + s.w * 0.5, C.LOGICAL_H - s.h * 0.92, s.w * 0.35);
+        ctx.fill();
+      }
+    }
+    return;
   }
-  // Canopy scallop shading the top corners.
-  ctx.fillStyle = C.COLORS.treeNear;
-  ctx.beginPath();
-  ctx.moveTo(0, 0);
-  ctx.lineTo(C.LOGICAL_W, 0);
-  ctx.lineTo(C.LOGICAL_W, 30);
-  ctx.quadraticCurveTo(960, 74, 640, 40);
-  ctx.quadraticCurveTo(320, 6, 0, 52);
-  ctx.closePath();
-  ctx.fill();
+
+  // Front layer: the drowned grove's kelp sways over the ground.
+  if (kind === 'kelp') {
+    ctx.lineCap = 'round';
+    for (const k of KELPS) {
+      const swayX = view.reducedMotion ? 0 : Math.sin(t * k.sp + k.ph) * k.amp;
+      ctx.strokeStyle = k.far ? p.propFar : p.propNear;
+      ctx.lineWidth = k.w;
+      ctx.beginPath();
+      ctx.moveTo(k.x, C.LOGICAL_H + 8);
+      ctx.quadraticCurveTo(k.x + swayX * 0.4, C.LOGICAL_H - k.h * 0.5, k.x + swayX, C.LOGICAL_H - k.h);
+      ctx.stroke();
+    }
+  }
 }
 
-function drawGround(ctx, t, view) {
+function drawGround(ctx, world, t, view) {
+  const p = pal(world);
   const g = ctx.createLinearGradient(0, 590, 0, C.LOGICAL_H);
-  g.addColorStop(0, C.COLORS.groundTop);
-  g.addColorStop(1, C.COLORS.groundBottom);
+  g.addColorStop(0, p.groundTop);
+  g.addColorStop(1, p.groundBottom);
   ctx.fillStyle = g;
   ctx.fillRect(0, 590, C.LOGICAL_W, C.LOGICAL_H - 590);
 
-  for (const p of GLOW_PATCHES) {
-    const grad = ctx.createRadialGradient(p.x, p.y, 2, p.x, p.y, p.r);
-    grad.addColorStop(0, p.teal ? C.COLORS.mossGlowTeal : C.COLORS.mossGlowGold);
+  for (const patch of GLOW_PATCHES) {
+    const grad = ctx.createRadialGradient(patch.x, patch.y, 2, patch.x, patch.y, patch.r);
+    grad.addColorStop(0, patch.flip ? p.glowB : p.glowA);
     grad.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.fillStyle = grad;
-    circle(ctx, p.x, p.y, p.r);
+    circle(ctx, patch.x, patch.y, patch.r);
     ctx.fill();
   }
 
-  ctx.strokeStyle = C.COLORS.mossTuft;
+  ctx.strokeStyle = p.tuft;
   ctx.lineWidth = 2;
   ctx.lineCap = 'round';
   const sway = view.reducedMotion ? 0 : Math.sin(t * 0.7) * 2;
@@ -185,45 +288,34 @@ function drawGround(ctx, t, view) {
   }
 }
 
-function drawFireflies(ctx, t, view) {
+function drawFireflies(ctx, world, t, view) {
+  const p = pal(world);
   for (const f of FIREFLIES) {
     const dx = view.reducedMotion ? 0 : Math.sin(t * f.sp + f.ph) * 14;
     const dy = view.reducedMotion ? 0 : Math.cos(t * f.sp * 0.8 + f.ph) * 9;
     const a = view.reducedMotion ? 0.5 : 0.25 + 0.5 * (0.5 + 0.5 * Math.sin(t * 2 + f.ph * 3));
     ctx.globalAlpha = a;
-    ctx.fillStyle = C.COLORS.goldBright;
+    ctx.fillStyle = p.seed;
     circle(ctx, f.x + dx, f.y + dy, f.r);
     ctx.fill();
   }
   ctx.globalAlpha = 1;
 }
 
-function drawVignette(ctx) {
-  const l = ctx.createLinearGradient(0, 0, 130, 0);
-  l.addColorStop(0, 'rgba(2,5,12,0.55)');
-  l.addColorStop(1, 'rgba(2,5,12,0)');
-  ctx.fillStyle = l;
-  ctx.fillRect(0, 0, 130, C.LOGICAL_H);
-  const r = ctx.createLinearGradient(C.LOGICAL_W - 130, 0, C.LOGICAL_W, 0);
-  r.addColorStop(0, 'rgba(2,5,12,0)');
-  r.addColorStop(1, 'rgba(2,5,12,0.55)');
-  ctx.fillStyle = r;
-  ctx.fillRect(C.LOGICAL_W - 130, 0, 130, C.LOGICAL_H);
-}
-
 // ---------------------------------------------------------------- entities
 
 function drawSeeds(ctx, world, t) {
+  const p = pal(world);
   for (const s of world.seeds) {
     if (s.taken) continue;
     const pulse = 1 + 0.08 * Math.sin(t * 3 + s.twinkle);
     const glow = ctx.createRadialGradient(s.x, s.y, 2, s.x, s.y, 26);
-    glow.addColorStop(0, 'rgba(94,225,190,0.5)');
-    glow.addColorStop(1, 'rgba(94,225,190,0)');
+    glow.addColorStop(0, p.seedGlow);
+    glow.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.fillStyle = glow;
     circle(ctx, s.x, s.y, 26);
     ctx.fill();
-    ctx.fillStyle = C.COLORS.teal;
+    ctx.fillStyle = p.seed;
     ctx.beginPath();
     ctx.arc(s.x, s.y, C.SEED.r * pulse, -0.4 * Math.PI, 0.75 * Math.PI);
     ctx.arc(s.x + 6 * pulse, s.y - 3 * pulse, C.SEED.r * 0.78 * pulse, 0.75 * Math.PI, -0.4 * Math.PI, true);
@@ -266,6 +358,11 @@ function drawBloom(ctx, world, t) {
 function drawBramble(ctx, b, t) {
   ctx.save();
   ctx.translate(b.x, b.y);
+
+  if (b.stun > 0) {
+    // A stilled bramble: dimmed body under a pale, brittle shell.
+    ctx.globalAlpha = 0.55;
+  }
 
   if (b.kind === 'lunger') {
     if (b.state === 'telegraph') {
@@ -313,23 +410,40 @@ function drawBramble(ctx, b, t) {
   ctx.fillStyle = C.COLORS.magenta;
   circle(ctx, 0, 0, b.r * 0.42);
   ctx.fill();
+
+  if (b.stun > 0) {
+    ctx.globalAlpha = 0.9;
+    ctx.strokeStyle = '#cfeaff';
+    ctx.lineWidth = 2.5;
+    circle(ctx, 0, 0, b.r * 1.25);
+    ctx.stroke();
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(a) * b.r * 1.25, Math.sin(a) * b.r * 1.25);
+      ctx.lineTo(Math.cos(a) * b.r * 1.55, Math.sin(a) * b.r * 1.55);
+      ctx.stroke();
+    }
+  }
   ctx.restore();
 }
 
 function drawLantern(ctx, world, t, view) {
   const p = world.player;
+  const emberFrac = world.ember / C.EMBER.max;
   const blink = p.invuln > 0 && p.dashTime <= 0 ? 0.45 + 0.55 * Math.abs(Math.sin(t * 14)) : 1;
 
   ctx.save();
   ctx.globalAlpha = blink;
 
-  // Warm glow around the lantern.
-  const glow = ctx.createRadialGradient(p.x, p.y, 4, p.x, p.y, 58);
-  glow.addColorStop(0, 'rgba(255,207,107,0.5)');
-  glow.addColorStop(0.55, 'rgba(255,207,107,0.14)');
+  // Warm glow around the lantern; a charged ember burns wider and brighter.
+  const glowR = 58 + 14 * emberFrac;
+  const glow = ctx.createRadialGradient(p.x, p.y, 4, p.x, p.y, glowR);
+  glow.addColorStop(0, `rgba(255,207,107,${0.5 + 0.3 * emberFrac})`);
+  glow.addColorStop(0.55, `rgba(255,207,107,${0.14 + 0.1 * emberFrac})`);
   glow.addColorStop(1, 'rgba(255,207,107,0)');
   ctx.fillStyle = glow;
-  circle(ctx, p.x, p.y, 58);
+  circle(ctx, p.x, p.y, glowR);
   ctx.fill();
 
   // Dash streaks.
@@ -390,6 +504,65 @@ function drawLantern(ctx, world, t, view) {
   ctx.restore();
 }
 
+/** The expanding shockwave ring of a spent flare. */
+function drawFlareRing(ctx, world, view) {
+  if (world.flareTimer <= 0) return;
+  const frac = 1 - world.flareTimer / C.EMBER.flareActive;
+  ctx.save();
+  if (view.reducedMotion) {
+    ctx.globalAlpha = 0.5;
+    ctx.strokeStyle = '#fff4d6';
+    ctx.lineWidth = 4;
+    circle(ctx, world.player.x, world.player.y, C.EMBER.flareRadius * 0.85);
+    ctx.stroke();
+  } else {
+    const r = 30 + frac * (C.EMBER.flareRadius - 30);
+    ctx.globalAlpha = 0.85 * (1 - frac * 0.6);
+    ctx.strokeStyle = '#fff4d6';
+    ctx.lineWidth = 5 - frac * 3;
+    circle(ctx, world.player.x, world.player.y, r);
+    ctx.stroke();
+    ctx.globalAlpha = 0.4 * (1 - frac * 0.6);
+    ctx.strokeStyle = C.COLORS.gold;
+    ctx.lineWidth = 9 - frac * 5;
+    circle(ctx, world.player.x, world.player.y, Math.max(10, r - 14));
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/** A soft chevron pointing at the nearest uncollected moonseed when it is far. */
+function drawSeedPointer(ctx, world) {
+  if (world.phase !== PHASE.RUNNING) return;
+  let best = null;
+  let bd = Infinity;
+  for (const s of world.seeds) {
+    if (s.taken) continue;
+    const d = Math.hypot(s.x - world.player.x, s.y - world.player.y);
+    if (d < bd) {
+      bd = d;
+      best = s;
+    }
+  }
+  if (!best || bd <= 340) return;
+  const dx = (best.x - world.player.x) / bd;
+  const dy = (best.y - world.player.y) / bd;
+  const tipX = world.player.x + dx * 54;
+  const tipY = world.player.y + dy * 54;
+  ctx.save();
+  ctx.globalAlpha = 0.75;
+  ctx.translate(tipX, tipY);
+  ctx.rotate(Math.atan2(dy, dx));
+  ctx.fillStyle = pal(world).seed;
+  ctx.beginPath();
+  ctx.moveTo(8, 0);
+  ctx.lineTo(-6, -6.5);
+  ctx.lineTo(-6, 6.5);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
 function drawParticles(ctx, effects) {
   for (const p of effects.parts) {
     ctx.globalAlpha = Math.max(0, Math.min(1, p.life / p.maxLife));
@@ -410,11 +583,51 @@ function drawTrail(ctx, effects) {
   ctx.globalAlpha = 1;
 }
 
-// ---------------------------------------------------------------- HUD
+function drawVignette(ctx) {
+  const l = ctx.createLinearGradient(0, 0, 130, 0);
+  l.addColorStop(0, 'rgba(2,5,12,0.55)');
+  l.addColorStop(1, 'rgba(2,5,12,0)');
+  ctx.fillStyle = l;
+  ctx.fillRect(0, 0, 130, C.LOGICAL_H);
+  const r = ctx.createLinearGradient(C.LOGICAL_W - 130, 0, C.LOGICAL_W, 0);
+  r.addColorStop(0, 'rgba(2,5,12,0)');
+  r.addColorStop(1, 'rgba(2,5,12,0.55)');
+  ctx.fillStyle = r;
+  ctx.fillRect(C.LOGICAL_W - 130, 0, 130, C.LOGICAL_H);
+}
 
-function drawHeart(ctx, x, y, filled) {
+/** Renders the scenery and entities pass (chunky, low-res buffer). */
+export function renderWorld(ctx, world, view) {
+  const t = view.t;
+  ctx.save();
+  if (view.effects.shake > 0 && !view.reducedMotion) {
+    ctx.translate(Math.sin(t * 89) * view.effects.shake * 0.5, Math.cos(t * 97) * view.effects.shake * 0.4);
+  }
+
+  drawSky(ctx, world, t, view);
+  drawProps(ctx, world, t, view, 'back');
+  drawGround(ctx, world, t, view);
+  drawProps(ctx, world, t, view, 'front');
+  drawSeeds(ctx, world, t);
+  drawBloom(ctx, world, t);
+  for (const b of world.brambles) drawBramble(ctx, b, t);
+  drawTrail(ctx, view.effects);
+  drawLantern(ctx, world, t, view);
+  drawFlareRing(ctx, world, view);
+  drawSeedPointer(ctx, world);
+  drawParticles(ctx, view.effects);
+  drawFireflies(ctx, world, t, view);
+  drawVignette(ctx);
+
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------- UI: HUD
+
+function drawHeart(ctx, x, y, filled, s = 1) {
   ctx.save();
   ctx.translate(x, y);
+  ctx.scale(s, s);
   if (filled) {
     const glow = ctx.createRadialGradient(0, 0, 2, 0, 0, 16);
     glow.addColorStop(0, 'rgba(255,207,107,0.45)');
@@ -439,64 +652,97 @@ function drawHeart(ctx, x, y, filled) {
   ctx.restore();
 }
 
+function drawEmberMeter(ctx, world, t, reducedMotion) {
+  const frac = Math.max(0, Math.min(1, world.ember / C.EMBER.max));
+  const full = frac >= 1;
+  const x = 520;
+  const y = C.LOGICAL_H - 54;
+  const w = 240;
+  const h = 24;
+  rrect(ctx, x, y, w, h, 12);
+  ctx.fillStyle = 'rgba(9,18,38,0.75)';
+  ctx.fill();
+  if (frac > 0) {
+    const pulse = full && !reducedMotion ? 0.85 + 0.15 * Math.sin(t * 6) : 1;
+    ctx.globalAlpha = pulse;
+    const g = ctx.createLinearGradient(x, 0, x + w, 0);
+    g.addColorStop(0, C.COLORS.goldDeep);
+    g.addColorStop(1, full ? '#fff4d6' : C.COLORS.gold);
+    ctx.fillStyle = g;
+    rrect(ctx, x + 3, y + 3, Math.max(6, (w - 6) * frac), h - 6, 9);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  ctx.strokeStyle = full ? C.COLORS.goldBright : 'rgba(232,244,255,0.22)';
+  ctx.lineWidth = 1.5;
+  rrect(ctx, x, y, w, h, 12);
+  ctx.stroke();
+  ctx.fillStyle = full ? C.COLORS.goldBright : C.COLORS.dim;
+  ctx.font = '700 13px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(full ? 'FLARE READY — E' : 'EMBER', x + w / 2, y + h / 2 + 1);
+}
+
 function drawHUD(ctx, world, t, view) {
+  const p = pal(world);
   // Readability scrim behind the top band.
-  const scrim = ctx.createLinearGradient(0, 0, 0, 92);
-  scrim.addColorStop(0, 'rgba(4,8,18,0.85)');
+  const scrim = ctx.createLinearGradient(0, 0, 0, 100);
+  scrim.addColorStop(0, 'rgba(4,8,18,0.88)');
   scrim.addColorStop(1, 'rgba(4,8,18,0)');
   ctx.fillStyle = scrim;
-  ctx.fillRect(0, 0, C.LOGICAL_W, 92);
+  ctx.fillRect(0, 0, C.LOGICAL_W, 100);
 
-  for (let i = 0; i < C.MAX_HEARTS; i++) drawHeart(ctx, 36 + i * 34, 44, i < world.hearts);
+  for (let i = 0; i < C.MAX_HEARTS; i++) drawHeart(ctx, 40 + i * 42, 48, i < world.hearts, 1.3);
 
-  // Timer bar with numeric seconds.
-  const frac = Math.max(0, world.timeLeft / C.RUN_SECONDS);
-  rrect(ctx, 150, 34, 250, 14, 7);
+  // Timer bar with big numeric seconds.
+  const frac = Math.max(0, world.timeLeft / world.region.time);
+  rrect(ctx, 168, 38, 290, 18, 9);
   ctx.fillStyle = 'rgba(232,244,255,0.12)';
   ctx.fill();
   if (frac > 0) {
-    const g = ctx.createLinearGradient(150, 0, 400, 0);
+    const g = ctx.createLinearGradient(168, 0, 458, 0);
     g.addColorStop(0, C.COLORS.teal);
     g.addColorStop(1, C.COLORS.gold);
     ctx.fillStyle = g;
-    rrect(ctx, 152, 36, 246 * frac, 10, 5);
+    rrect(ctx, 170, 40, 286 * frac, 14, 7);
     ctx.fill();
   }
   ctx.fillStyle = C.COLORS.ink;
-  ctx.font = '600 20px system-ui, sans-serif';
+  ctx.font = '700 22px system-ui, sans-serif';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  ctx.fillText(`${Math.ceil(Math.max(0, world.timeLeft))}s`, 412, 42);
+  ctx.fillText(`${Math.ceil(Math.max(0, world.timeLeft))}s`, 472, 48);
 
-  // Seeds gathered.
+  // Region name above the seed count.
   ctx.textAlign = 'center';
-  ctx.font = '600 13px system-ui, sans-serif';
-  ctx.fillStyle = C.COLORS.dim;
-  ctx.fillText('SEEDS', 640, 28);
-  ctx.font = '700 24px system-ui, sans-serif';
-  ctx.fillStyle = C.COLORS.teal;
-  ctx.fillText(`${world.collected}/${C.TOTAL_SEEDS}`, 640, 50);
+  ctx.font = '700 14px system-ui, sans-serif';
+  ctx.fillStyle = p.accentDim;
+  ctx.fillText(world.region.name, 690, 24);
+  ctx.font = '800 26px system-ui, sans-serif';
+  ctx.fillStyle = p.accent;
+  ctx.fillText(`MOONSEEDS ${world.collected}/${world.region.seeds}`, 690, 52);
 
   // Score and streak.
   ctx.textAlign = 'right';
   ctx.font = '600 13px system-ui, sans-serif';
   ctx.fillStyle = C.COLORS.dim;
   ctx.fillText('SCORE', 1112, 24);
-  ctx.font = '700 26px system-ui, sans-serif';
+  ctx.font = '800 27px system-ui, sans-serif';
   ctx.fillStyle = C.COLORS.ink;
-  ctx.fillText(String(world.score), 1112, 48);
+  ctx.fillText(String(world.score), 1112, 50);
   if (world.combo > 1) {
     const a = Math.max(0.25, Math.min(1, world.comboTimer / C.COMBO.window));
     ctx.globalAlpha = a;
-    ctx.font = '700 18px system-ui, sans-serif';
+    ctx.font = '700 19px system-ui, sans-serif';
     ctx.fillStyle = C.COLORS.gold;
-    ctx.fillText(`COMBO ×${world.combo}`, 1112, 70);
+    ctx.fillText(`COMBO ×${world.combo}`, 1112, 74);
     ctx.globalAlpha = 1;
   }
 
   // Dash readiness pill.
   const ready = world.player.dashCooldown <= 0;
-  rrect(ctx, 26, C.LOGICAL_H - 52, 128, 26, 13);
+  rrect(ctx, 26, C.LOGICAL_H - 54, 132, 28, 14);
   ctx.fillStyle = 'rgba(9,18,38,0.7)';
   ctx.fill();
   ctx.strokeStyle = ready ? C.COLORS.tealDim : 'rgba(232,244,255,0.18)';
@@ -504,16 +750,67 @@ function drawHUD(ctx, world, t, view) {
   ctx.stroke();
   if (!ready) {
     ctx.fillStyle = C.COLORS.tealDim;
-    rrect(ctx, 28, C.LOGICAL_H - 50, 124 * (1 - world.player.dashCooldown / C.PLAYER.dashCooldown), 22, 11);
+    rrect(ctx, 28, C.LOGICAL_H - 52, 128 * (1 - world.player.dashCooldown / C.PLAYER.dashCooldown), 24, 12);
     ctx.fill();
   }
   ctx.fillStyle = ready ? C.COLORS.goldBright : C.COLORS.dim;
   ctx.font = '700 13px system-ui, sans-serif';
   ctx.textAlign = 'center';
-  ctx.fillText(ready ? 'DASH READY' : 'DASH', 90, C.LOGICAL_H - 39);
+  ctx.textBaseline = 'middle';
+  ctx.fillText(ready ? 'DASH READY' : 'DASH', 92, C.LOGICAL_H - 40);
 
-  // On-screen dash button for touch players.
-  if (view.touch) drawDashButton(ctx, t);
+  drawEmberMeter(ctx, world, t, view.reducedMotion);
+
+  // Touch buttons for dash and flare.
+  if (view.touch) {
+    drawCircleActionButton(ctx, { x: 1180, y: 630, r: 50 }, 'DASH', 1, t);
+    drawCircleActionButton(ctx, { x: 1052, y: 640, r: 40 }, 'FLARE', world.ember / C.EMBER.max, t);
+  }
+
+  // The run's objective, spoken once at the start of every region.
+  if (world.elapsed < 3) {
+    const a = Math.max(0, Math.min(1, 3 - world.elapsed)) * 0.95;
+    ctx.globalAlpha = a;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = p.accent;
+    ctx.font = '700 20px system-ui, sans-serif';
+    ctx.fillText(world.region.name, 640, 268);
+    ctx.fillStyle = C.COLORS.goldBright;
+    ctx.font = '800 34px system-ui, sans-serif';
+    ctx.fillText(`GATHER ${world.region.seeds} MOONSEEDS`, 640, 310);
+    ctx.fillStyle = C.COLORS.dim;
+    ctx.font = '400 17px system-ui, sans-serif';
+    ctx.fillText('Graze the brambles to charge the ember — a full ember flares.', 640, 344);
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawCircleActionButton(ctx, b, label, charge, t) {
+  ctx.save();
+  ctx.globalAlpha = 0.9;
+  circle(ctx, b.x, b.y, b.r);
+  ctx.fillStyle = 'rgba(9,18,38,0.6)';
+  ctx.fill();
+  const full = charge >= 1;
+  ctx.strokeStyle = full ? C.COLORS.goldBright : C.COLORS.gold;
+  ctx.lineWidth = 2.5;
+  ctx.globalAlpha = 0.7 + 0.3 * Math.sin(t * 3);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+  if (charge > 0 && charge < 1) {
+    ctx.strokeStyle = C.COLORS.goldDeep;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.r - 6, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * charge);
+    ctx.stroke();
+  }
+  ctx.fillStyle = full ? C.COLORS.goldBright : C.COLORS.gold;
+  ctx.font = '700 18px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, b.x, b.y);
+  ctx.restore();
 }
 
 // ---------------------------------------------------------------- buttons
@@ -527,21 +824,43 @@ export function getButtons(phase, opts = {}) {
       { id: 'pause', shape: 'circle', x: 1208, y: 44, r: 22 },
     ];
     if (phase === PHASE.PAUSED) {
-      list.push({ id: 'resume', shape: 'rect', x: 540, y: 430, w: 200, h: 54, label: 'RESUME' });
+      list.push({ id: 'resume', shape: 'rect', x: 500, y: 418, w: 280, h: 54, label: 'RESUME' });
+      list.push({ id: 'route', shape: 'rect', x: 540, y: 488, w: 200, h: 40, label: 'THE ROUTE' });
     }
     if (touch && phase === PHASE.RUNNING) {
       list.push({ id: 'dash', shape: 'circle', x: 1180, y: 630, r: 50 });
+      list.push({ id: 'flare', shape: 'circle', x: 1052, y: 640, r: 40 });
     }
     return list;
   }
-  if (phase === PHASE.MENU) {
-    return [{ id: 'start', shape: 'rect', x: 500, y: 566, w: 280, h: 62, label: 'BEGIN THE RUN' }];
+  if (phase === PHASE.MAP || phase === PHASE.MENU) {
+    const list = [{ id: 'mute', shape: 'circle', x: 1208, y: 44, r: 22 }];
+    MAP_NODES.forEach((n, i) => list.push({ id: `region${i}`, shape: 'circle', x: n.x, y: n.y, r: 46 }));
+    return list;
   }
   if (phase === PHASE.WON || phase === PHASE.LOST) {
-    return [{ id: 'restart', shape: 'rect', x: 540, y: 512, w: 200, h: 54, label: 'RUN AGAIN' }];
+    const list = [];
+    if (phase === PHASE.WON && opts.next) {
+      list.push({ id: 'primary', shape: 'rect', x: 500, y: 492, w: 280, h: 54, label: 'NEXT REGION' });
+      list.push({ id: 'route', shape: 'rect', x: 540, y: 560, w: 200, h: 40, label: 'THE ROUTE' });
+    } else if (phase === PHASE.WON) {
+      list.push({ id: 'primary', shape: 'rect', x: 500, y: 492, w: 280, h: 54, label: 'THE ROUTE' });
+    } else {
+      list.push({ id: 'primary', shape: 'rect', x: 500, y: 492, w: 280, h: 54, label: 'RETRY REGION' });
+      list.push({ id: 'route', shape: 'rect', x: 540, y: 560, w: 200, h: 40, label: 'THE ROUTE' });
+    }
+    return list;
   }
   return [];
 }
+
+/** The route screen's node positions, shared by the drawing and hit-testing. */
+export const MAP_NODES = [
+  { x: 210, y: 434 },
+  { x: 500, y: 356 },
+  { x: 790, y: 434 },
+  { x: 1080, y: 356 },
+];
 
 function labelButton(ctx, b, t) {
   if (!b) return;
@@ -560,26 +879,6 @@ function labelButton(ctx, b, t) {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2 + 1);
-  ctx.restore();
-}
-
-function drawDashButton(ctx, t) {
-  const b = { x: 1180, y: 630, r: 50 };
-  ctx.save();
-  ctx.globalAlpha = 0.9;
-  circle(ctx, b.x, b.y, b.r);
-  ctx.fillStyle = 'rgba(9,18,38,0.6)';
-  ctx.fill();
-  ctx.strokeStyle = C.COLORS.gold;
-  ctx.lineWidth = 2.5;
-  ctx.globalAlpha = 0.7 + 0.3 * Math.sin(t * 3);
-  ctx.stroke();
-  ctx.globalAlpha = 1;
-  ctx.fillStyle = C.COLORS.goldBright;
-  ctx.font = '700 20px system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText('DASH', b.x, b.y);
   ctx.restore();
 }
 
@@ -645,92 +944,176 @@ function card(ctx, x, y, w, h) {
   ctx.stroke();
 }
 
-function drawTitle(ctx, t) {
+function drawLock(ctx, x, y) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.strokeStyle = C.COLORS.faint;
+  ctx.fillStyle = C.COLORS.faint;
+  ctx.lineWidth = 2.4;
+  ctx.beginPath();
+  ctx.arc(0, -4, 4.5, Math.PI, 0);
+  ctx.stroke();
+  rrect(ctx, -7, -3, 14, 12, 2.5);
+  ctx.fill();
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------- route map
+
+function drawMap(ctx, world, t, view) {
+  dim(ctx, 0.7);
+  const camp = view.camp;
+  const sel = view.mapSel;
+
   ctx.textAlign = 'center';
   ctx.textBaseline = 'alphabetic';
   try {
-    ctx.letterSpacing = '10px';
+    ctx.letterSpacing = '6px';
   } catch {}
   ctx.save();
-  ctx.shadowColor = 'rgba(255,207,107,0.55)';
-  ctx.shadowBlur = 26;
+  ctx.shadowColor = 'rgba(255,207,107,0.5)';
+  ctx.shadowBlur = 22;
   ctx.fillStyle = C.COLORS.gold;
-  ctx.font = '800 88px system-ui, sans-serif';
-  ctx.fillText('MOSSLIGHT', 640, 138);
+  ctx.font = '800 50px system-ui, sans-serif';
+  ctx.fillText('MOSSLIGHT COURIER', 640, 92);
   ctx.restore();
   try {
-    ctx.letterSpacing = '18px';
+    ctx.letterSpacing = '3px';
   } catch {}
-  ctx.fillStyle = C.COLORS.teal;
-  ctx.font = '700 44px system-ui, sans-serif';
-  ctx.fillText('COURIER', 649, 192);
+  ctx.fillStyle = C.COLORS.dim;
+  ctx.font = '400 16px system-ui, sans-serif';
+  ctx.fillText('THE FOUR-GROVE ROUTE — CHOOSE YOUR NEXT RUN', 640, 124);
   try {
     ctx.letterSpacing = '0px';
   } catch {}
-  ctx.fillStyle = C.COLORS.dim;
-  ctx.font = '400 19px system-ui, sans-serif';
-  ctx.fillText('A lantern-lit dash through the moonlit grove', 640, 226);
-}
-
-function drawMenu(ctx, t, view) {
-  dim(ctx, 0.62);
-  drawTitle(ctx, t);
-  const cards = [
-    {
-      x: 96,
-      head: 'THE RUN',
-      lines: ['Gather all 12 moonseeds', 'before 72 seconds run out.', 'Keep all three hearts lit.'],
-    },
-    {
-      x: 470,
-      head: 'CONTROLS',
-      lines: ['WASD / Arrows — steer', 'Space / Shift — dash', 'P — pause · M — mute'],
-    },
-    {
-      x: 844,
-      head: 'THE GROVE',
-      lines: ['Magenta brambles sting.', 'Dash through, unharmed —', 'a close graze earns +35.'],
-    },
-  ];
-  for (const c of cards) {
-    card(ctx, c.x, 268, 340, 148);
-    ctx.fillStyle = C.COLORS.gold;
-    ctx.font = '700 17px system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(c.head, c.x + 170, 300);
-    ctx.fillStyle = C.COLORS.dim;
-    ctx.font = '400 15.5px system-ui, sans-serif';
-    c.lines.forEach((line, i) => ctx.fillText(line, c.x + 170, 330 + i * 26));
-  }
+  ctx.textAlign = 'right';
   ctx.fillStyle = C.COLORS.teal;
-  ctx.font = '400 15px system-ui, sans-serif';
+  ctx.font = '700 16px system-ui, sans-serif';
+  ctx.fillText(`${totalCleared(camp)}/4 GROVES LIT`, 1208, 92);
+
+  // The dashed route connecting the groves.
+  ctx.strokeStyle = 'rgba(232,244,255,0.22)';
+  ctx.lineWidth = 3;
+  ctx.setLineDash([4, 12]);
+  for (let i = 0; i < MAP_NODES.length - 1; i++) {
+    const a = MAP_NODES[i];
+    const b = MAP_NODES[i + 1];
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.quadraticCurveTo((a.x + b.x) / 2, Math.min(a.y, b.y) - 62, b.x, b.y);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  // One node per region: locked, unlit, or cleared with its best run.
+  MAP_NODES.forEach((n, i) => {
+    const region = REGIONS[i];
+    const rec = camp.regions[i];
+    const unlocked = i === 0 || (camp.regions[i - 1] && camp.regions[i - 1].cleared);
+    const selected = i === sel;
+    ctx.save();
+    ctx.globalAlpha = unlocked ? 1 : 0.55;
+    circle(ctx, n.x, n.y, 44);
+    ctx.fillStyle = region.colors.skyTop;
+    ctx.fill();
+    ctx.strokeStyle = unlocked ? region.colors.accent : 'rgba(232,244,255,0.25)';
+    ctx.lineWidth = selected ? 3.5 : 2.5;
+    ctx.stroke();
+    if (selected && !view.reducedMotion) {
+      ctx.strokeStyle = C.COLORS.gold;
+      ctx.globalAlpha = 0.55 + 0.45 * Math.sin(t * 4);
+      ctx.lineWidth = 2;
+      circle(ctx, n.x, n.y, 55);
+      ctx.stroke();
+      ctx.globalAlpha = unlocked ? 1 : 0.55;
+    }
+    if (unlocked) {
+      ctx.fillStyle = C.COLORS.ink;
+      ctx.font = '800 32px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(i + 1), n.x, n.y - 5);
+      if (rec.cleared) {
+        ctx.fillStyle = region.colors.accent;
+        ctx.font = '800 16px system-ui, sans-serif';
+        ctx.fillText(rec.bestGrade ?? '—', n.x, n.y + 16);
+      }
+    } else {
+      drawLock(ctx, n.x, n.y);
+    }
+    ctx.textBaseline = 'alphabetic';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = unlocked ? region.colors.accent : C.COLORS.dim;
+    ctx.font = '700 15px system-ui, sans-serif';
+    ctx.fillText(region.name, n.x, n.y + 68);
+    ctx.fillStyle = C.COLORS.dim;
+    ctx.font = '400 13px system-ui, sans-serif';
+    const status = !unlocked
+      ? 'LOCKED'
+      : rec.cleared
+        ? `BEST ${rec.bestScore} · ${rec.bestGrade}`
+        : 'UNLIT — READY';
+    ctx.fillText(status, n.x, n.y + 88);
+    ctx.restore();
+  });
+
+  // Selected region panel.
+  const region = REGIONS[sel];
+  const rec = camp.regions[sel];
+  card(ctx, 340, 580, 600, 74);
+  ctx.textAlign = 'left';
+  ctx.fillStyle = region.colors.accent;
+  ctx.font = '800 19px system-ui, sans-serif';
+  ctx.fillText(`${sel + 1}. ${region.name}`, 364, 610);
+  ctx.fillStyle = C.COLORS.dim;
+  ctx.font = '400 14px system-ui, sans-serif';
+  ctx.fillText(region.tag, 364, 634);
+  ctx.textAlign = 'right';
+  ctx.fillStyle = rec.cleared ? C.COLORS.gold : C.COLORS.goldBright;
+  ctx.font = '700 15px system-ui, sans-serif';
+  ctx.fillText(rec.cleared ? `BEST ${rec.bestScore} · ${rec.bestGrade}` : 'ENTER TO DEPART', 916, 622);
+
   ctx.textAlign = 'center';
-  ctx.fillText('Rare moonbloom: heals a heart — +150 points at full health.', 640, 452);
-  labelButton(ctx, getButtons(PHASE.MENU)[0], t);
   ctx.fillStyle = C.COLORS.faint;
   ctx.font = '400 14px system-ui, sans-serif';
-  ctx.fillText(`Enter to begin · Best score ${view.best} · M mutes the grove`, 640, 664);
+  ctx.fillText('←/→ or tap a grove · Enter departs · M mutes', 640, 700);
+
+  const muteBtn = getButtons(world.phase, view).find((b) => b.id === 'mute');
+  if (muteBtn) drawCircleButton(ctx, muteBtn, 'mute', view.muted);
 }
+
+// ---------------------------------------------------------------- results
 
 function drawResults(ctx, world, t, view) {
   dim(ctx, 0.72);
   const sum = runSummary(world);
   const won = sum.won;
-  card(ctx, 330, 122, 620, 460);
+  const region = REGIONS[world.regionIdx] ?? REGIONS[0];
+  const rec = view.camp.regions[world.regionIdx] ?? { bestScore: 0, bestGrade: null, cleared: false };
+  const next = REGIONS[world.regionIdx + 1];
+  const last = world.regionIdx >= REGIONS.length - 1;
+  card(ctx, 300, 106, 680, 478);
 
   ctx.textAlign = 'center';
   ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = region.colors.accentDim;
+  ctx.font = '700 15px system-ui, sans-serif';
+  ctx.fillText(`REGION ${world.regionIdx + 1} — ${region.name}`, 640, 146);
+
   ctx.fillStyle = won ? C.COLORS.gold : C.COLORS.magenta;
-  ctx.font = '800 46px system-ui, sans-serif';
-  ctx.fillText(won ? 'GROVE DELIVERED' : 'THE LIGHT FADED', 640, 196);
-  const reason =
-    won
-      ? 'Every moonseed carried home through the dark.'
-      : sum.loseReason === 'time'
-        ? 'Dawn came before the last moonseed was found.'
-        : 'A bramble snuffed the lantern.';
-  ctx.fillStyle = C.COLORS.dim;
-  ctx.font = '400 17px system-ui, sans-serif';
+  ctx.font = '800 44px system-ui, sans-serif';
+  ctx.fillText(won ? (last ? 'EVERY GROVE LIT' : 'REGION CLEARED') : 'THE LIGHT FADED', 640, 194);
+
+  let reason;
+  if (won) {
+    reason = last
+      ? 'The whole route burns with lantern light. Well carried.'
+      : `THE PATH OPENS — ${next.name} IS NOW LIT`;
+  } else {
+    reason = sum.loseReason === 'time' ? 'Dawn came before the last moonseed was found.' : 'A bramble snuffed the lantern.';
+  }
+  ctx.fillStyle = won && !last ? C.COLORS.goldBright : C.COLORS.dim;
+  ctx.font = won && !last ? '700 17px system-ui, sans-serif' : '400 17px system-ui, sans-serif';
   ctx.fillText(reason, 640, 228);
 
   // Grade medallion.
@@ -750,14 +1133,15 @@ function drawResults(ctx, world, t, view) {
   ctx.fillText('GRADE', 434, 410);
 
   // Stats column.
+  const newBest = !!(view.lastResult && view.lastResult.newBest && sum.score > 0);
   const rows = [
     ['Score', String(sum.score)],
-    ['Best score', `${view.best}${view.best <= sum.score && sum.score > 0 ? '  ·  NEW BEST' : ''}`],
+    ['Region best', `${rec.bestScore}${newBest ? '  ·  NEW BEST' : ''}`],
     ['Moonseeds', `${sum.collected}/${sum.total}`],
     ['Best combo', `×${sum.maxCombo}`],
     ['Near misses', `${sum.nearMisses}`],
+    ['Ember flares', `${sum.flares} (${sum.stilled} stilled)`],
     ['Hits taken', `${sum.hitsTaken}`],
-    ['Dashes used', `${sum.dashesUsed}`],
     ['Time bonus', `+${sum.timeBonus}`],
   ];
   ctx.textAlign = 'left';
@@ -767,18 +1151,20 @@ function drawResults(ctx, world, t, view) {
     ctx.fillStyle = C.COLORS.dim;
     ctx.fillText(k, 540, y);
     ctx.font = '700 16px system-ui, sans-serif';
-    ctx.fillStyle = k === 'Best score' && view.best <= sum.score && sum.score > 0 ? C.COLORS.gold : C.COLORS.ink;
+    ctx.fillStyle = k === 'Region best' && newBest ? C.COLORS.gold : C.COLORS.ink;
     ctx.textAlign = 'right';
     ctx.fillText(v, 906, y);
     ctx.textAlign = 'left';
     y += 30;
   }
   ctx.textBaseline = 'alphabetic';
-  labelButton(ctx, getButtons(world.phase)[0], t);
+  const buttons = getButtons(world.phase, { next: view.nextAvailable });
+  labelButton(ctx, buttons[0], t);
+  labelButton(ctx, buttons[1], t);
   ctx.fillStyle = C.COLORS.faint;
   ctx.font = '400 14px system-ui, sans-serif';
   ctx.textAlign = 'center';
-  ctx.fillText('Enter or R — run again', 640, 606);
+  ctx.fillText(won ? 'Enter — continue · R — retry · B — the route' : 'Enter — retry · R — retry · B — the route', 640, 614);
 }
 
 function drawPaused(ctx, t) {
@@ -787,36 +1173,21 @@ function drawPaused(ctx, t) {
   ctx.textBaseline = 'middle';
   ctx.fillStyle = C.COLORS.ink;
   ctx.font = '800 56px system-ui, sans-serif';
-  ctx.fillText('PAUSED', 640, 330);
+  ctx.fillText('PAUSED', 640, 320);
   ctx.fillStyle = C.COLORS.dim;
   ctx.font = '400 18px system-ui, sans-serif';
-  ctx.fillText('P or Esc to resume · M mutes', 640, 372);
+  ctx.fillText('P or Esc to resume · B — abandon to the route', 640, 362);
   ctx.textBaseline = 'alphabetic';
-  labelButton(ctx, getButtons(PHASE.PAUSED).find((b) => b.id === 'resume'), t);
+  const buttons = getButtons(PHASE.PAUSED);
+  labelButton(ctx, buttons.find((b) => b.id === 'resume'), t);
+  labelButton(ctx, buttons.find((b) => b.id === 'route'), t);
 }
 
-// ---------------------------------------------------------------- frame
+// ---------------------------------------------------------------- UI frame
 
-/** Renders one complete frame of the game from live state. */
-export function render(ctx, world, view) {
+/** Renders the full-resolution UI pass over the pixelated world pass. */
+export function renderUI(ctx, world, view) {
   const t = view.t;
-  ctx.save();
-  if (view.effects.shake > 0 && !view.reducedMotion) {
-    ctx.translate(Math.sin(t * 89) * view.effects.shake * 0.5, Math.cos(t * 97) * view.effects.shake * 0.4);
-  }
-
-  drawSky(ctx, t, view);
-  drawForest(ctx);
-  drawGround(ctx, t, view);
-  drawSeeds(ctx, world, t);
-  drawBloom(ctx, world, t);
-  for (const b of world.brambles) drawBramble(ctx, b, t);
-  drawTrail(ctx, view.effects);
-  drawLantern(ctx, world, t, view);
-  drawParticles(ctx, view.effects);
-  drawFireflies(ctx, t, view);
-  drawVignette(ctx);
-
   const phase = world.phase;
   if (phase === PHASE.RUNNING || phase === PHASE.PAUSED) {
     drawHUD(ctx, world, t, view);
@@ -825,9 +1196,7 @@ export function render(ctx, world, view) {
       else if (b.id === 'pause') drawCircleButton(ctx, b, 'pause', false);
     }
   }
-  if (phase === PHASE.MENU) drawMenu(ctx, t, view);
+  if (phase === PHASE.MAP || phase === PHASE.MENU) drawMap(ctx, world, t, view);
   else if (phase === PHASE.PAUSED) drawPaused(ctx, t);
   else if (phase === PHASE.WON || phase === PHASE.LOST) drawResults(ctx, world, t, view);
-
-  ctx.restore();
 }

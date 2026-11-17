@@ -7,9 +7,11 @@
 
 import { createRng } from './rng.js';
 import * as C from './config.js';
+import { REGIONS, clampRegionIndex } from './regions.js';
 
 export const PHASE = {
   MENU: 'menu',
+  MAP: 'map', // the route screen: pick a region, the sim itself stays still
   RUNNING: 'running',
   PAUSED: 'paused',
   WON: 'won',
@@ -31,23 +33,45 @@ function freshStats() {
     dashesUsed: 0,
     blooms: 0,
     timeBonus: 0,
+    flares: 0,
+    stilled: 0,
   };
 }
 
+/**
+ * A fair seeded pick from a { kind: weight } table. Deterministic for a given
+ * rng state, and a zero-weight kind is never picked.
+ */
+export function pickWeighted(rng, weights) {
+  const entries = Object.entries(weights).filter(([, w]) => w > 0);
+  if (entries.length === 0) return null;
+  let roll = rng.next() * entries.reduce((s, [, w]) => s + w, 0);
+  for (const [k, w] of entries) {
+    roll -= w;
+    if (roll < 0) return k;
+  }
+  return entries[entries.length - 1][0];
+}
+
 /** A fresh world in the MENU phase. Spawns happen in startRun. */
-export function createWorld(seed = 1) {
+export function createWorld(seed = 1, regionIdx = 0) {
+  const region = REGIONS[clampRegionIndex(regionIdx)];
   return {
     seed: seed >>> 0,
     rng: createRng(seed >>> 0),
+    regionIdx: region.index,
+    region, // shared, read-only region kit (tuning + palette)
     phase: PHASE.MENU,
     elapsed: 0,
-    timeLeft: C.RUN_SECONDS,
+    timeLeft: region.time,
     hearts: C.MAX_HEARTS,
     collected: 0,
     score: 0,
     combo: 0,
     comboTimer: 0,
     stage: 0,
+    ember: 0,
+    flareTimer: 0,
     loseReason: null,
     bloom: null,
     bloomTimer: C.BLOOM.intervalMin,
@@ -88,15 +112,19 @@ export function runSummary(world) {
     loseReason: world.loseReason,
     score: world.score,
     collected: world.collected,
-    total: C.TOTAL_SEEDS,
+    total: world.region.seeds,
     maxCombo: world.stats.maxCombo,
     nearMisses: world.stats.nearMisses,
     hitsTaken: world.stats.hitsTaken,
     dashesUsed: world.stats.dashesUsed,
     blooms: world.stats.blooms,
+    flares: world.stats.flares,
+    stilled: world.stats.stilled,
     timeBonus: world.stats.timeBonus,
     timeLeft: Math.max(0, world.timeLeft),
     hearts: world.hearts,
+    regionIdx: world.regionIdx,
+    regionName: world.region.name,
   };
 }
 
@@ -132,7 +160,7 @@ function fairPosition(world, opts) {
 }
 
 function spawnBramble(world) {
-  const kind = world.rng.pick(C.BRAMBLE.kinds);
+  const kind = pickWeighted(world.rng, world.region.weights) ?? 'drifter';
   const pos = fairPosition(world, {
     minPlayer: C.BRAMBLE.minSpawnDist,
     others: world.brambles,
@@ -145,6 +173,7 @@ function spawnBramble(world) {
     y: pos.y,
     nearMissed: false,
     spin: world.rng.range(0, PI2),
+    stun: 0,
   };
   if (kind === 'drifter') {
     b.heading = world.rng.range(0, PI2);
@@ -167,15 +196,18 @@ function spawnBramble(world) {
 
 /** Begins a run: resets the field and lays out seeds and hazards fairly. */
 export function startRun(world) {
+  const region = world.region;
   world.phase = PHASE.RUNNING;
   world.elapsed = 0;
-  world.timeLeft = C.RUN_SECONDS;
+  world.timeLeft = region.time;
   world.hearts = C.MAX_HEARTS;
   world.collected = 0;
   world.score = 0;
   world.combo = 0;
   world.comboTimer = 0;
   world.stage = 0;
+  world.ember = 0;
+  world.flareTimer = 0;
   world.loseReason = null;
   world.stats = freshStats();
   world.events = [];
@@ -190,7 +222,7 @@ export function startRun(world) {
   world.seeds = [];
   world.brambles = [];
   world.bloom = null;
-  for (let i = 0; i < C.TOTAL_SEEDS; i++) {
+  for (let i = 0; i < region.seeds; i++) {
     const pos = fairPosition(world, {
       minPlayer: C.SEED.minPlayerDist,
       others: world.seeds,
@@ -198,7 +230,7 @@ export function startRun(world) {
     });
     world.seeds.push({ x: pos.x, y: pos.y, taken: false, twinkle: world.rng.range(0, PI2) });
   }
-  for (let i = 0; i < C.BRAMBLE.initial; i++) spawnBramble(world);
+  for (let i = 0; i < region.initial; i++) spawnBramble(world);
   world.bloomTimer = world.rng.range(C.BLOOM.intervalMin, C.BLOOM.intervalMax);
   world.events.push({ type: 'start' });
 }
@@ -212,13 +244,19 @@ export function stepWorld(world, input, dt) {
   world.elapsed += step;
   world.timeLeft -= step;
 
-  // Gentle escalation: every stage adds one hazard and speeds them up.
-  const targetStage = Math.min(C.BRAMBLE.max - C.BRAMBLE.initial, Math.floor(world.elapsed / C.BRAMBLE.stageEvery));
+  // Regional escalation: every stage adds one hazard and speeds them up,
+  // on each region's own cadence.
+  const targetStage = Math.min(
+    world.region.max - world.region.initial,
+    Math.floor(world.elapsed / world.region.stageEvery),
+  );
   while (world.stage < targetStage) {
     world.stage++;
     spawnBramble(world);
     events.push({ type: 'stage', stage: world.stage });
   }
+
+  if (world.flareTimer > 0) world.flareTimer = Math.max(0, world.flareTimer - step);
 
   updatePlayer(world, input, step, events);
   updateBrambles(world, step, events);
@@ -245,6 +283,33 @@ export function stepWorld(world, input, dt) {
   return events;
 }
 
+/**
+ * The Ember Flare: with a full ember, one spent edge trigger stills every
+ * bramble in the flare radius, pays points per bramble, and grants a breath
+ * of invulnerability. Anything less does nothing, so the choice of when to
+ * spend a full ember stays with the player.
+ */
+function tryFlare(world, input, events) {
+  if (!input.flare) return;
+  const p = world.player;
+  if (world.ember < C.EMBER.max || world.flareTimer > 0) return;
+  world.ember = 0;
+  world.flareTimer = C.EMBER.flareActive;
+  p.invuln = Math.max(p.invuln, C.EMBER.flareInvuln);
+  let stilled = 0;
+  for (const b of world.brambles) {
+    if (b.stun <= 0 && Math.hypot(b.x - p.x, b.y - p.y) <= C.EMBER.flareRadius + b.r) {
+      b.stun = C.EMBER.stunTime;
+      stilled++;
+    }
+  }
+  const points = stilled * C.EMBER.stunPoints;
+  world.score += points;
+  world.stats.flares++;
+  world.stats.stilled += stilled;
+  events.push({ type: 'flare', x: p.x, y: p.y, stilled, points });
+}
+
 function updatePlayer(world, input, dt, events) {
   const p = world.player;
   let ax = clamp(Number(input.axisX) || 0, -1, 1);
@@ -254,6 +319,8 @@ function updatePlayer(world, input, dt, events) {
     ax /= len;
     ay /= len;
   }
+
+  tryFlare(world, input, events);
 
   // Dash: a short burst with brief invulnerability, on a visible cooldown.
   if (input.dash && p.dashCooldown <= 0 && p.dashTime <= 0) {
@@ -306,8 +373,14 @@ function updatePlayer(world, input, dt, events) {
 
 function updateBrambles(world, dt, events) {
   const p = world.player;
-  const m = 1 + world.stage * C.BRAMBLE.speedRamp;
+  const m = 1 + world.stage * world.region.speedRamp;
   for (const b of world.brambles) {
+    // A stilled bramble hangs frozen and inert: it neither moves nor stings,
+    // and it pays no near-miss either.
+    if (b.stun > 0) {
+      b.stun -= dt;
+      continue;
+    }
     b.spin += dt;
     if (b.kind === 'drifter') {
       b.heading += world.rng.range(-0.9, 0.9) * dt;
@@ -384,11 +457,21 @@ function updateBrambles(world, dt, events) {
         }
       }
     } else if (!b.nearMissed && d < hitR + C.NEAR_MISS.reach) {
-      // A close pass is worth +35 once per hazard per run.
+      // A close pass is worth +35 once per hazard per run — and it feeds the
+      // ember, so grazing charges the flare.
       b.nearMissed = true;
       world.score += C.SCORE.nearMiss;
       world.stats.nearMisses++;
-      events.push({ type: 'near', x: (b.x + p.x) / 2, y: (b.y + p.y) / 2, points: C.SCORE.nearMiss });
+      const wasCharged = world.ember >= C.EMBER.max;
+      world.ember = Math.min(C.EMBER.max, world.ember + C.EMBER.grazeGain);
+      events.push({
+        type: 'near',
+        x: (b.x + p.x) / 2,
+        y: (b.y + p.y) / 2,
+        points: C.SCORE.nearMiss,
+        ember: world.ember,
+      });
+      if (!wasCharged && world.ember >= C.EMBER.max) events.push({ type: 'emberFull', x: p.x, y: p.y });
     }
   }
 }
@@ -442,7 +525,7 @@ function collectSeeds(world, events) {
       const pts = comboPoints(world.combo);
       world.score += pts;
       events.push({ type: 'collect', x: s.x, y: s.y, combo: world.combo, points: pts });
-      if (world.collected >= C.TOTAL_SEEDS) {
+      if (world.collected >= world.region.seeds) {
         world.stats.timeBonus = Math.round(Math.max(0, world.timeLeft) * C.SCORE.timeBonusPerSecond);
         world.score += world.stats.timeBonus;
         world.phase = PHASE.WON;

@@ -1,50 +1,75 @@
 // Mosslight Courier — browser bootstrap and game loop.
 //
-// Owns the canvas, the fixed-timestep loop, screen transitions, audio and
-// particle wiring, and the truthful screenshot fixture modes (?shot=start,
-// play, win, lose) which render the game's own renderer at arranged states.
+// Owns the canvas, the fixed-timestep loop, the campaign flow (route map →
+// region run → result → route), the persistent campaign save, audio and
+// particle wiring, and the truthful screenshot fixture modes (?shot=map, play,
+// win, lose) which render the game's own renderer at arranged states.
 // Fixtures are review aids only — they are not proof of human gameplay.
 
 import * as C from './config.js';
-import { PHASE, createWorld, startRun, stepWorld, togglePause } from './world.js';
+import { PHASE, createWorld, startRun, stepWorld, togglePause, runSummary } from './world.js';
+import { REGION_COUNT, clampRegionIndex } from './regions.js';
+import {
+  createCampaign,
+  recordResult,
+  serialize,
+  deserialize,
+  isUnlocked,
+  firstIncomplete,
+} from './campaign.js';
 import { createInput, inputAxis, inputDash, takePressed, resetInput } from './input.js';
 import { createEffects, updateEffects, eventBurst, pushTrail } from './effects.js';
-import { setupTransform, render, getButtons } from './renderer.js';
+import { setupTransform, renderWorld, renderUI, getButtons } from './renderer.js';
 import { ensureAudio, sfx, setMuted } from './audio.js';
 
 const STEP = 1 / 60;
-const BEST_KEY = 'mosslight-courier-best';
+const CAMP_KEY = 'mosslight-courier-campaign-v2';
+/** World pass downscale: the scenery is drawn chunky, then blitted back. */
+const PIXEL_SCALE = 3;
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 const shotMode = new URLSearchParams(window.location.search).get('shot');
 
-function loadBest() {
+// Low-resolution world buffer for the pixel-inspired pass.
+const pix = document.createElement('canvas');
+pix.width = Math.ceil(C.LOGICAL_W / PIXEL_SCALE);
+pix.height = Math.ceil(C.LOGICAL_H / PIXEL_SCALE);
+const pixCtx = pix.getContext('2d');
+
+// ------------------------------------------------------------ campaign save
+
+function loadCampaign() {
   try {
-    return Number(window.localStorage.getItem(BEST_KEY)) || 0;
+    return deserialize(window.localStorage.getItem(CAMP_KEY)) ?? createCampaign();
   } catch {
-    return 0;
+    return createCampaign();
   }
 }
 
-function saveBest(score) {
+function saveCampaign() {
   try {
-    window.localStorage.setItem(BEST_KEY, String(score));
+    window.localStorage.setItem(CAMP_KEY, serialize(view.camp));
   } catch {}
 }
 
-let world = createWorld(1337);
+let world = createWorld(1337, 0);
 const effects = createEffects();
 const input = createInput();
+const camp = loadCampaign();
 const view = {
   t: 0,
   touch: window.matchMedia('(pointer: coarse)').matches,
   muted: false,
-  best: loadBest(),
   reducedMotion,
   effects,
+  camp,
+  mapSel: firstIncomplete(camp),
+  nextAvailable: false,
+  lastResult: null,
 };
+world.phase = PHASE.MAP;
 
 // ------------------------------------------------------------- canvas fit
 
@@ -63,25 +88,30 @@ function newSeed() {
   return (Math.random() * 0xffffffff) >>> 0;
 }
 
-function beginRun(seed) {
-  world = createWorld(seed);
+function beginRun(regionIdx) {
+  const idx = clampRegionIndex(regionIdx);
+  view.mapSel = idx;
+  view.nextAvailable = false;
+  view.lastResult = null;
+  world = createWorld(newSeed(), idx);
   startRun(world);
   dispatch(world.events);
 }
 
-function confirmAction() {
-  if (world.phase === PHASE.MENU || world.phase === PHASE.WON || world.phase === PHASE.LOST) {
-    beginRun(newSeed());
-  } else if (world.phase === PHASE.PAUSED) {
-    togglePause(world);
-  }
+/** Leaves whatever is on screen for the route map. */
+function gotoMap() {
+  world = createWorld(newSeed(), view.mapSel);
+  world.phase = PHASE.MAP;
+  sfx('route');
 }
 
 function onRunEnd() {
-  if (world.score > view.best) {
-    view.best = world.score;
-    saveBest(world.score);
-  }
+  const sum = runSummary(world);
+  const res = recordResult(view.camp, world.regionIdx, sum);
+  view.lastResult = res;
+  view.nextAvailable = sum.won && world.regionIdx < REGION_COUNT - 1;
+  saveCampaign();
+  if (res.openedNext) sfx('unlock');
 }
 
 /** Sends simulation events to sound and particles. */
@@ -90,7 +120,7 @@ function dispatch(events) {
     if (ev.type === 'collect') sfx('collect', ev.combo);
     else sfx(ev.type);
     eventBurst(effects, ev, reducedMotion);
-    if ((ev.type === 'win' || ev.type === 'lose') && world.score > 0) onRunEnd();
+    if (ev.type === 'win' || ev.type === 'lose') onRunEnd();
   }
 }
 
@@ -115,15 +145,44 @@ function hitButton(x, y) {
   return null;
 }
 
+function tapRegion(idx) {
+  if (isUnlocked(view.camp, idx)) {
+    if (idx === view.mapSel) {
+      sfx('ui');
+      beginRun(idx);
+    } else {
+      view.mapSel = idx;
+      sfx('mapMove');
+    }
+  } else {
+    sfx('locked');
+  }
+}
+
 canvas.addEventListener('pointerdown', (e) => {
   ensureAudio();
   view.touch = view.touch || e.pointerType === 'touch';
   const pt = toLogical(e);
   const id = hitButton(pt.x, pt.y);
-  if (id === 'start' || id === 'restart' || id === 'resume') {
+  if (id && id.startsWith('region')) {
+    tapRegion(Number(id.slice(6)));
+    return;
+  }
+  if (id === 'primary') {
     sfx('ui');
-    if (id === 'start' || id === 'restart') beginRun(newSeed());
-    else togglePause(world);
+    if (world.phase === PHASE.WON && view.nextAvailable) beginRun(world.regionIdx + 1);
+    else if (world.phase === PHASE.WON) gotoMap();
+    else beginRun(world.regionIdx);
+    return;
+  }
+  if (id === 'route') {
+    sfx('ui');
+    gotoMap();
+    return;
+  }
+  if (id === 'resume') {
+    sfx('ui');
+    togglePause(world);
     return;
   }
   if (id === 'pause') {
@@ -139,6 +198,10 @@ canvas.addEventListener('pointerdown', (e) => {
   }
   if (id === 'dash' && world.phase === PHASE.RUNNING) {
     input.button.dash = true;
+    return;
+  }
+  if (id === 'flare' && world.phase === PHASE.RUNNING) {
+    input.button.flare = true; // consumed as a one-shot edge by the loop
     return;
   }
   // Otherwise begin drag steering from this point.
@@ -176,17 +239,39 @@ document.addEventListener('visibilitychange', () => {
 
 // ------------------------------------------------------------- main loop
 
+function stepMapSelection(dir) {
+  const open = [];
+  for (let i = 0; i < REGION_COUNT; i++) if (isUnlocked(view.camp, i)) open.push(i);
+  if (open.length < 2) return;
+  const at = Math.max(0, open.indexOf(view.mapSel));
+  view.mapSel = open[(at + dir + open.length) % open.length];
+  sfx('mapMove');
+}
+
 function handleEdges() {
   if (takePressed(input, 'confirm')) {
     ensureAudio();
     sfx('ui');
-    confirmAction();
+    if (world.phase === PHASE.MAP || world.phase === PHASE.MENU) beginRun(view.mapSel);
+    else if (world.phase === PHASE.WON) {
+      if (view.nextAvailable) beginRun(world.regionIdx + 1);
+      else gotoMap();
+    } else if (world.phase === PHASE.LOST) beginRun(world.regionIdx);
+    else if (world.phase === PHASE.PAUSED) togglePause(world);
   }
   if (takePressed(input, 'pause')) {
     ensureAudio();
     if (world.phase === PHASE.RUNNING || world.phase === PHASE.PAUSED) {
       sfx(world.phase === PHASE.RUNNING ? 'pause' : 'resume');
       togglePause(world);
+    } else if (world.phase === PHASE.WON || world.phase === PHASE.LOST) {
+      gotoMap();
+    }
+  }
+  if (takePressed(input, 'back')) {
+    if (world.phase === PHASE.PAUSED || world.phase === PHASE.WON || world.phase === PHASE.LOST) {
+      sfx('ui');
+      gotoMap();
     }
   }
   if (takePressed(input, 'mute')) {
@@ -194,12 +279,32 @@ function handleEdges() {
     setMuted(view.muted);
   }
   if (takePressed(input, 'restart')) {
-    if (world.phase === PHASE.WON || world.phase === PHASE.LOST) beginRun(newSeed());
+    if (world.phase === PHASE.WON || world.phase === PHASE.LOST) beginRun(world.regionIdx);
+  }
+  // mapLeft/mapRight are consumed every frame, in every phase: movement
+  // presses made outside the route screen must never queue up a stale
+  // selection change for later.
+  const wantMapLeft = takePressed(input, 'mapLeft');
+  const wantMapRight = takePressed(input, 'mapRight');
+  if (world.phase === PHASE.MAP || world.phase === PHASE.MENU) {
+    if (wantMapLeft) stepMapSelection(-1);
+    if (wantMapRight) stepMapSelection(1);
   }
 }
 
 let acc = 0;
 let last = performance.now();
+
+/** One composed frame: chunky world pass, then the crisp UI pass. */
+function renderFrame() {
+  pixCtx.setTransform(pix.width / C.LOGICAL_W, 0, 0, pix.height / C.LOGICAL_H, 0, 0);
+  renderWorld(pixCtx, world, view);
+  setupTransform(ctx, canvas);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(pix, 0, 0, C.LOGICAL_W, C.LOGICAL_H);
+  ctx.imageSmoothingEnabled = true;
+  renderUI(ctx, world, view);
+}
 
 function frame(now) {
   window.requestAnimationFrame(frame);
@@ -208,14 +313,25 @@ function frame(now) {
   view.t += dt;
   handleEdges();
 
+  // The flare is a one-shot edge: it lands on the first step of the frame.
+  let flareEdge = takePressed(input, 'flare');
+  if (input.button.flare) {
+    flareEdge = true;
+    input.button.flare = false;
+  }
+
   if (world.phase === PHASE.RUNNING) {
     acc += dt;
     let steps = 0;
     while (acc >= STEP && steps < 6) {
       acc -= STEP;
-      steps++;
       const axis = inputAxis(input);
-      const events = stepWorld(world, { axisX: axis.x, axisY: axis.y, dash: inputDash(input) }, STEP);
+      const events = stepWorld(
+        world,
+        { axisX: axis.x, axisY: axis.y, dash: inputDash(input), flare: flareEdge && steps === 0 },
+        STEP,
+      );
+      steps++;
       dispatch(events);
       if (!reducedMotion && steps % 2 === 0) pushTrail(effects, world.player.x, world.player.y);
       if (world.phase !== PHASE.RUNNING) {
@@ -228,13 +344,20 @@ function frame(now) {
   }
 
   updateEffects(effects, dt);
-  setupTransform(ctx, canvas);
-  render(ctx, world, view);
+  renderFrame();
 }
 
 // ------------------------------------------------------------- fixtures
-// ?shot=start | play | win | lose — truthful renders of the real renderer at
+// ?shot=map | play | win | lose — truthful renders of the real renderer at
 // arranged game states. They are review fixtures, never proof of play.
+
+function arrangedCampaign() {
+  // A mid-route campaign so the map shows progression, locks and bests.
+  const c = createCampaign();
+  recordResult(c, 0, { won: true, score: 3520 });
+  recordResult(c, 1, { won: true, score: 2210 });
+  return c;
+}
 
 function nearestSeed(w) {
   let best = null;
@@ -267,33 +390,45 @@ function pinBramble(b, x, y) {
 }
 
 function setupShot(mode) {
-  world = createWorld(1337);
-  if (mode === 'play') {
+  if (mode === 'start') mode = 'map';
+  view.camp = arrangedCampaign();
+  view.mapSel = 2;
+  view.nextAvailable = false;
+  view.lastResult = null;
+  if (mode === 'map') {
+    world = createWorld(1337, view.mapSel);
+    world.phase = PHASE.MAP;
+  } else if (mode === 'play') {
+    world = createWorld(1337, 1); // Ambershard Wastes, mid-route
     startRun(world);
     dispatch(world.events);
     for (let i = 0; i < 210; i++) {
       const target = nearestSeed(world);
       const ax = target ? Math.max(-1, Math.min(1, (target.x - world.player.x) / 120)) : 0;
       const ay = target ? Math.max(-1, Math.min(1, (target.y - world.player.y) / 120)) : 0;
-      const events = stepWorld(world, { axisX: ax, axisY: ay, dash: i === 70 }, STEP);
+      const events = stepWorld(world, { axisX: ax, axisY: ay, dash: i === 70, flare: false }, STEP);
       dispatch(events);
       if (!reducedMotion) pushTrail(effects, world.player.x, world.player.y);
       // Fixture guard: keep the mid-run shot playable rather than near-death.
       if (world.hearts < 2) world.hearts = 2;
       if (world.phase !== PHASE.RUNNING) break;
     }
+    // Arranged: a partially charged ember so the meter reads in the shot.
+    world.ember = 66;
   } else if (mode === 'win') {
+    world = createWorld(1337, 1);
     startRun(world);
     dispatch(world.events);
     let guard = 0;
-    while (world.collected < C.TOTAL_SEEDS && guard++ < 200) {
+    while (world.collected < world.region.seeds && guard++ < 200) {
       const s = world.seeds.find((seed) => !seed.taken);
       world.player.x = s.x;
       world.player.y = s.y;
       world.player.invuln = 999;
-      dispatch(stepWorld(world, { axisX: 0, axisY: 0, dash: false }, STEP));
+      dispatch(stepWorld(world, { axisX: 0, axisY: 0, dash: false, flare: false }, STEP));
     }
   } else if (mode === 'lose') {
+    world = createWorld(1337, 3); // Umbral Crown
     startRun(world);
     dispatch(world.events);
     world.hearts = 1;
@@ -301,11 +436,10 @@ function setupShot(mode) {
     world.player.x = b.x;
     world.player.y = b.y;
     world.player.invuln = 0;
-    dispatch(stepWorld(world, { axisX: 0, axisY: 0, dash: false }, STEP));
+    dispatch(stepWorld(world, { axisX: 0, axisY: 0, dash: false, flare: false }, STEP));
   }
   // One completed render, then flag readiness for the capture tool.
-  setupTransform(ctx, canvas);
-  render(ctx, world, view);
+  renderFrame();
   window.requestAnimationFrame(() => {
     window.requestAnimationFrame(() => {
       window.__shotReady = true;

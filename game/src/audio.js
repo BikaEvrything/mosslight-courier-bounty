@@ -143,6 +143,22 @@ const SFX = {
   },
   stage: () => tone({ freq: 220, end: 260, dur: 0.2, type: 'triangle', gain: 0.06 }),
   comboEnd: () => tone({ freq: 360, end: 300, dur: 0.1, gain: 0.04 }),
+  // The ember flare: a bright crack, then a rising wash.
+  flare: () => {
+    tone({ freq: 900, end: 120, dur: 0.45, type: 'sawtooth', gain: 0.08 });
+    noise({ dur: 0.4, gain: 0.1, freq: 700 });
+    tone({ freq: 220, end: 660, dur: 0.4, type: 'triangle', gain: 0.08, delay: 0.06 });
+  },
+  emberFull: () => {
+    tone({ freq: 660, dur: 0.1, gain: 0.06 });
+    tone({ freq: 990, dur: 0.14, gain: 0.06, delay: 0.07 });
+  },
+  unlock: () => {
+    [523, 659, 784, 1046].forEach((f, i) => tone({ freq: f, dur: 0.22, type: 'triangle', gain: 0.1, delay: i * 0.09 }));
+  },
+  mapMove: () => tone({ freq: 440, dur: 0.05, type: 'triangle', gain: 0.05 }),
+  locked: () => tone({ freq: 140, dur: 0.12, type: 'square', gain: 0.06 }),
+  route: () => tone({ freq: 340, end: 260, dur: 0.12, type: 'triangle', gain: 0.07 }),
 };
 
 /** Plays one named cue; silent until the audio context exists. */

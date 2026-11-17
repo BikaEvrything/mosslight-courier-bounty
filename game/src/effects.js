@@ -100,6 +100,11 @@ export function eventBurst(effects, ev, reducedMotion) {
     case 'stage':
       burst(effects, ev.x ?? 640, ev.y ?? 380, { count: 12, color: '#5ee1be', speed: 75, life: 0.7, size: 2.6 });
       break;
+    case 'flare':
+      burst(effects, ev.x, ev.y, { count: 30, color: '#fff4d6', speed: 330, life: 0.6, size: 3 });
+      burst(effects, ev.x, ev.y, { count: 20, color: '#ffcf6b', speed: 210, life: 0.8, size: 3.2 });
+      effects.shake = 8;
+      break;
     default:
       break;
   }

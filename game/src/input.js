@@ -1,9 +1,9 @@
 // Mosslight Courier — browser input.
 //
-// Keyboard (WASD / arrows, Space or Shift to dash, Enter, P/Escape, M, R) and
-// pointer drag steering. main.js feeds canvas button presses into `button`
-// and reads edge triggers via takePressed. The world simulation never sees
-// this module; it only consumes the plain axis object built here.
+// Keyboard (WASD / arrows, Space or Shift to dash, E to flare, Enter, P/Escape,
+// B, M, R) and pointer drag steering. main.js feeds canvas button presses into
+// `button` and reads edge triggers via takePressed. The world simulation never
+// sees this module; it only consumes the plain axis object built here.
 
 const MOVE_KEYS = {
   w: 'up',
@@ -21,21 +21,36 @@ export function createInput() {
     keys: new Set(),
     pointer: { dragging: false, startX: 0, startY: 0, x: 0, y: 0 },
     button: { dash: false },
-    pressed: { confirm: false, pause: false, mute: false, restart: false },
+    pressed: {
+      confirm: false,
+      pause: false,
+      mute: false,
+      restart: false,
+      flare: false,
+      back: false,
+      mapLeft: false,
+      mapRight: false,
+    },
   };
 
   const onKeyDown = (e) => {
     const k = e.key.toLowerCase();
     if (MOVE_KEYS[k] || k === ' ') e.preventDefault();
     if (e.repeat) return;
-    if (MOVE_KEYS[k]) input.keys.add(MOVE_KEYS[k]);
-    else if (k === ' ' || k === 'shift') input.keys.add('dash');
+    if (MOVE_KEYS[k]) {
+      input.keys.add(MOVE_KEYS[k]);
+      // On the route screen the same keys step between groves.
+      if (k === 'arrowleft' || k === 'a') input.pressed.mapLeft = true;
+      else if (k === 'arrowright' || k === 'd') input.pressed.mapRight = true;
+    } else if (k === ' ' || k === 'shift') input.keys.add('dash');
     else if (k === 'enter') input.pressed.confirm = true;
     else if (k === 'p' || k === 'escape') {
       input.pressed.pause = true;
       e.preventDefault();
     } else if (k === 'm') input.pressed.mute = true;
     else if (k === 'r') input.pressed.restart = true;
+    else if (k === 'e') input.pressed.flare = true;
+    else if (k === 'b') input.pressed.back = true;
   };
 
   const onKeyUp = (e) => {
@@ -58,6 +73,7 @@ export function resetInput(input) {
   input.keys.clear();
   input.pointer.dragging = false;
   input.button.dash = false;
+  input.button.flare = false;
 }
 
 /**

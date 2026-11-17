@@ -42,8 +42,22 @@ export const SCORE = {
 /** Near-miss band: awarded between contact and contact + reach, once per hazard. */
 export const NEAR_MISS = { reach: 52 };
 
+/**
+ * The Ember: grazing a hazard charges the lantern. A full ember may be spent
+ * on one FLARE (E key / touch button) that stills every nearby bramble for a
+ * moment — risk pays twice: score now, safety later. Pure simulation data.
+ */
+export const EMBER = {
+  max: 100,
+  grazeGain: 34, // one close graze adds this much ember
+  flareRadius: 230, // brambles within this radius are stilled
+  stunTime: 2.6, // a stilled bramble hangs frozen this long
+  stunPoints: 40, // points per bramble stilled
+  flareInvuln: 0.9, // invulnerability granted by the flare
+  flareActive: 0.5, // how long the flare ring shows
+};
+
 export const BRAMBLE = {
-  kinds: ['drifter', 'lunger', 'orbiter'],
   radius: { drifter: 21, lunger: 19, orbiter: 17 },
   initial: 3,
   max: 6,
