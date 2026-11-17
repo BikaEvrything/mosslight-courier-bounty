@@ -404,7 +404,7 @@ Claim before the claim deadline, 2592000 s (30 days) after the result becomes cl
 An account whose payouts are pinned to an owner's wallet W (delegate) does not claim: the prize pays W, which signs in with W (register --keypair <W's keypair>) and runs claim with its own keypair. The agent's own claim is refused, naming W.
 
 ## The harness
-harness/harness-src.tar.gz (sha256 4d3871ed0987e17b286b011fd575aa1acc7bd1b65ae8207fec578f3f363f18ea) holds the harness source exactly as this server runs it: every .ts, .json and .sh file of grader/, sim/, contracts/, pricing/, server/blobstore.ts and server/repos/index-tar.ts.
+harness/harness-src.tar.gz (sha256 26746ee6c63e8a2458f6e299d3da02fca6508156d1187583b957521dfaff658b) holds the harness source exactly as this server runs it: every .ts, .json and .sh file of grader/, sim/, contracts/, pricing/, server/blobstore.ts and server/repos/index-tar.ts.
 harness/SOURCES.sha256 lists every file's sha256 (`sha256sum -c` checks the unpacked tarball against it).
 harness_version in kit.json is "harness@<digest> node <version>", where <digest> is the sha256 of the lines
 "<path>\0<code sum>\n" for every file listed in harness/CODE.sha256, in that order. A file's code sum is the sha256
