@@ -351,6 +351,18 @@ function frame(now) {
 // ?shot=map | play | win | lose — truthful renders of the real renderer at
 // arranged game states. They are review fixtures, never proof of play.
 
+// A read-only probe for the browser smoke test: the live phase, selection and
+// run counters. It observes only — it changes nothing and drives nothing.
+window.__probe = () => ({
+  phase: world.phase,
+  sel: view.mapSel,
+  region: world.regionIdx,
+  timeLeft: world.timeLeft,
+  collected: world.collected,
+  waylights: world.stats.waylights,
+  relayDone: world.stats.relayDone,
+});
+
 function arrangedCampaign() {
   // A mid-route campaign so the map shows progression, locks and bests.
   const c = createCampaign();
@@ -387,6 +399,21 @@ function pinBramble(b, x, y) {
   b.x = x;
   b.y = y;
   return b;
+}
+
+/** Parks every bramble in a field corner (fixture aid for arranged passes). */
+function parkAllBrambles(w) {
+  const corners = [
+    { x: C.FIELD.x0 + 60, y: C.FIELD.y0 + 60 },
+    { x: C.FIELD.x1 - 60, y: C.FIELD.y0 + 60 },
+    { x: C.FIELD.x0 + 60, y: C.FIELD.y1 - 60 },
+    { x: C.FIELD.x1 - 60, y: C.FIELD.y1 - 60 },
+  ];
+  let i = 0;
+  for (const b of w.brambles) {
+    pinBramble(b, corners[i % 4].x, corners[i % 4].y);
+    i++;
+  }
 }
 
 function setupShot(mode) {
@@ -448,6 +475,26 @@ function setupShot(mode) {
       // Fixture guard: keep the mid-run shot playable rather than near-death.
       if (world.hearts < 2) world.hearts = 2;
       world.player.invuln = 0; // the frozen frame must not blink the lantern
+      // Arranged: the relay live — one beacon already lit, and the nearest
+      // unlit one staged just ahead of the lantern mid-channel, so the
+      // frozen frame shows the charge arc filling while the tide closes.
+      // Review fixture only — never evidence of play.
+      const unlit = world.waylights.filter((b) => !b.lit);
+      if (unlit.length >= 2) {
+        const near = [...unlit].sort(
+          (a, b) =>
+            Math.hypot(a.x - world.player.x, a.y - world.player.y) -
+            Math.hypot(b.x - world.player.x, b.y - world.player.y),
+        )[0];
+        const far = unlit.filter((b) => b !== near)[0];
+        far.lit = true;
+        world.stats.waylights = 1;
+        near.x = Math.max(C.FIELD.x0 + 90, Math.min(C.FIELD.x1 - 90, world.player.x + 60));
+        near.y = Math.max(C.FIELD.y0 + 60, Math.min(C.FIELD.y1 - 60, world.player.y));
+        world.player.x = Math.max(C.FIELD.x0 + 40, near.x - 46); // inside the ring
+        world.player.y = near.y;
+        near.channel = C.WAYLIGHT.channel * 0.6;
+      }
     }
     // Arranged: a partially charged ember so the meter reads in the shot.
     world.ember = 66;
@@ -455,6 +502,20 @@ function setupShot(mode) {
     world = createWorld(1337, 1);
     startRun(world);
     dispatch(world.events);
+    // Hazards pinned to the corners so the arranged passes stay clean.
+    parkAllBrambles(world);
+    // The relay is completed by the simulation itself: the shielded courier
+    // stands inside each beacon's ring for the full channel. Real steps,
+    // arranged staging — a review fixture, never proof of human play.
+    for (const bl of world.waylights) {
+      world.player.x = bl.x;
+      world.player.y = bl.y;
+      world.player.invuln = 999;
+      let relayGuard = 0;
+      while (!bl.lit && world.phase === PHASE.RUNNING && relayGuard++ < 120) {
+        dispatch(stepWorld(world, { axisX: 0, axisY: 0, dash: false, flare: false }, STEP));
+      }
+    }
     let guard = 0;
     while (world.collected < world.region.seeds && guard++ < 200) {
       const s = world.seeds.find((seed) => !seed.taken);

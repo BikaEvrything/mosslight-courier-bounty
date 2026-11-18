@@ -37,6 +37,8 @@ function freshStats() {
     flares: 0,
     stilled: 0,
     biome: 0, // the region's own mechanic stat (gusts / tides / snares)
+    waylights: 0, // beacons rekindled this run
+    relayDone: false, // the whole waylight relay completed
   };
 }
 
@@ -91,6 +93,7 @@ export function createWorld(seed = 1, regionIdx = 0) {
     },
     seeds: [],
     brambles: [],
+    waylights: [], // the waylight relay's beacons; laid out in startRun
     biome: null, // the regional field mechanic state; set in startRun
     stats: freshStats(),
     events: [],
@@ -130,6 +133,8 @@ export function runSummary(world) {
     regionName: world.region.name,
     biome: world.stats.biome,
     biomeLabel: world.biome ? world.biome.mechanic.statLabel : null,
+    waylights: world.stats.waylights,
+    relayDone: world.stats.relayDone,
   };
 }
 
@@ -168,7 +173,9 @@ function spawnBramble(world) {
   const kind = pickWeighted(world.rng, world.region.weights) ?? 'drifter';
   const pos = fairPosition(world, {
     minPlayer: C.BRAMBLE.minSpawnDist,
-    others: world.brambles,
+    // Hazards also keep clear of the unlit beacons, so no relay post is
+    // squatted by a hazard the moment the run begins.
+    others: world.brambles.concat(world.waylights),
     minOther: 180,
   });
   const b = {
@@ -226,12 +233,23 @@ export function startRun(world) {
   world.player.invuln = 0;
   world.seeds = [];
   world.brambles = [];
+  world.waylights = [];
   world.bloom = null;
   world.biome = initBiome(world);
+  // The relay first, so seeds and hazards can keep a fair distance from
+  // every beacon.
+  for (let i = 0; i < C.WAYLIGHT.count; i++) {
+    const pos = fairPosition(world, {
+      minPlayer: C.WAYLIGHT.minPlayerDist,
+      others: world.waylights,
+      minOther: C.WAYLIGHT.minSpacing,
+    });
+    world.waylights.push({ x: pos.x, y: pos.y, lit: false, channel: 0, glow: world.rng.range(0, PI2) });
+  }
   for (let i = 0; i < region.seeds; i++) {
     const pos = fairPosition(world, {
       minPlayer: C.SEED.minPlayerDist,
-      others: world.seeds,
+      others: world.seeds.concat(world.waylights),
       minOther: C.SEED.minSpacing,
     });
     world.seeds.push({ x: pos.x, y: pos.y, taken: false, twinkle: world.rng.range(0, PI2) });
@@ -264,12 +282,17 @@ export function stepWorld(world, input, dt) {
 
   if (world.flareTimer > 0) world.flareTimer = Math.max(0, world.flareTimer - step);
 
+  // Hits taken across this step (brambles and the regional mechanic alike)
+  // cancel any waylight commit the courier was holding.
+  const hitsAtStepStart = world.stats.hitsTaken;
+
   updatePlayer(world, input, step, events);
   updateBrambles(world, step, events);
   if (world.phase !== PHASE.RUNNING) return events; // a lost run stops changing
   updateBloom(world, step, events);
   updateBiome(world, step, events, damagePlayer);
   if (world.phase !== PHASE.RUNNING) return events; // a lethal mechanic ends the step here
+  updateWaylights(world, step, events, world.stats.hitsTaken > hitsAtStepStart);
 
   if (world.combo > 0) {
     world.comboTimer -= step;
@@ -463,6 +486,70 @@ function updateBrambles(world, dt, events) {
         ember: world.ember,
       });
       if (!wasCharged && world.ember >= C.EMBER.max) events.push({ type: 'emberFull', x: p.x, y: p.y });
+    }
+  }
+}
+
+/**
+ * The Waylight Relay: three seeded lantern posts per grove. Standing inside an
+ * unlit beacon's ring rekindles it — no new controls, only the choice to
+ * detour and hold the commit while hazards roam. Each beacon pays points,
+ * ember charge and a little time exactly once per run (so it can never be
+ * farmed), and lighting all three pays a relay bonus. A hit cancels the
+ * commit: a sting while channeling resets the charge, so the risk is real.
+ * The seed objective stays the win condition — the relay never wins or loses
+ * a run by itself, and the ember and timer caps both hold.
+ */
+function updateWaylights(world, dt, events, brokenByHit) {
+  const p = world.player;
+  for (const w of world.waylights) {
+    if (w.lit) continue;
+    // The step a hit lands: every unlit beacon's commit dies (one break cue
+    // per beacon that was charging) and nothing charges — the courier does
+    // not bank progress on the very step they were stung, even standing
+    // inside a ring.
+    if (brokenByHit) {
+      if (w.channel > 0) {
+        w.channel = 0;
+        events.push({ type: 'waylightBreak', x: w.x, y: w.y });
+      }
+      continue;
+    }
+    const inside = Math.hypot(p.x - w.x, p.y - w.y) <= C.WAYLIGHT.ring;
+    if (w.channel > 0 && !inside) {
+      w.channel = 0;
+      events.push({ type: 'waylightBreak', x: w.x, y: w.y });
+    }
+    if (!inside) continue;
+    w.channel = Math.min(C.WAYLIGHT.channel, w.channel + dt);
+    if (w.channel < C.WAYLIGHT.channel - 1e-9) continue;
+    w.lit = true;
+    w.channel = C.WAYLIGHT.channel;
+    world.score += C.WAYLIGHT.scorePerBeacon;
+    world.stats.waylights++;
+    const wasCharged = world.ember >= C.EMBER.max;
+    world.ember = Math.min(C.EMBER.max, world.ember + C.WAYLIGHT.emberPerBeacon);
+    world.timeLeft = Math.min(world.region.time, world.timeLeft + C.WAYLIGHT.timePerBeacon);
+    events.push({
+      type: 'waylight',
+      x: w.x,
+      y: w.y,
+      points: C.WAYLIGHT.scorePerBeacon,
+      ember: world.ember,
+      time: C.WAYLIGHT.timePerBeacon,
+    });
+    if (!wasCharged && world.ember >= C.EMBER.max) events.push({ type: 'emberFull', x: p.x, y: p.y });
+    if (world.stats.waylights >= C.WAYLIGHT.count) {
+      world.score += C.WAYLIGHT.relayBonus;
+      world.timeLeft = Math.min(world.region.time, world.timeLeft + C.WAYLIGHT.relayTime);
+      world.stats.relayDone = true;
+      events.push({
+        type: 'waylightRelay',
+        x: w.x,
+        y: w.y,
+        points: C.WAYLIGHT.relayBonus,
+        time: C.WAYLIGHT.relayTime,
+      });
     }
   }
 }

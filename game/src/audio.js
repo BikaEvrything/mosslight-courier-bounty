@@ -176,6 +176,16 @@ const SFX = {
     tone({ freq: 150, end: 60, dur: 0.3, type: 'square', gain: 0.09 });
     noise({ dur: 0.25, gain: 0.07, freq: 900 });
   },
+  // The waylight relay: a warm two-note rekindle, a small arpeggio when the
+  // whole relay completes, and a quiet dip when a commit is cancelled.
+  waylight: () => {
+    tone({ freq: 523, dur: 0.1, gain: 0.09, type: 'triangle' });
+    tone({ freq: 784, dur: 0.16, gain: 0.09, delay: 0.07 });
+  },
+  waylightRelay: () => {
+    [523, 659, 784, 1046].forEach((f, i) => tone({ freq: f, dur: 0.2, type: 'triangle', gain: 0.09, delay: i * 0.08 }));
+  },
+  waylightBreak: () => tone({ freq: 320, end: 240, dur: 0.12, gain: 0.04 }),
 };
 
 /** Plays one named cue; silent until the audio context exists. */

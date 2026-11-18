@@ -187,6 +187,7 @@ function drawProps(ctx, world, t, view, layer) {
   const sway = view.reducedMotion ? 0 : Math.sin(t * 0.7) * 2;
 
   if (layer === 'back') {
+    drawLandmark(ctx, world);
     if (kind === 'trees') {
       for (const tr of TRUNKS) {
         ctx.fillStyle = p.propFar;
@@ -263,6 +264,92 @@ function drawProps(ctx, world, t, view, layer) {
       ctx.stroke();
     }
   }
+}
+
+/**
+ * A distant landmark behind the field: one quiet silhouette per grove, so the
+ * four regions read as places with depth, not just palettes. Drawn first in
+ * the back props layer, where the region's props and the field always cover
+ * its feet, and kept dark and dim so it never competes with play.
+ */
+function drawLandmark(ctx, world) {
+  const p = pal(world);
+  const kind = regionOf(world).props;
+  ctx.save();
+  if (kind === 'trees') {
+    // Mosslight Hollow: a standing stone arch with a strung waylight.
+    ctx.fillStyle = p.propFar;
+    for (const x of [566, 714]) {
+      ctx.beginPath();
+      ctx.moveTo(x, 118);
+      ctx.quadraticCurveTo(x - 8, 70, x + 4, 40);
+      ctx.lineTo(x + 30, 40);
+      ctx.quadraticCurveTo(x + 40, 70, x + 32, 118);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.fillRect(556, 34, 200, 14); // the lintel
+    ctx.strokeStyle = 'rgba(255,207,107,0.55)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(666, 48);
+    ctx.lineTo(666, 66);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(255,207,107,0.75)';
+    circle(ctx, 666, 70, 5);
+    ctx.fill();
+  } else if (kind === 'shards') {
+    // Ambershard Wastes: a mega-shard leaning on the dusk skyline.
+    ctx.fillStyle = p.propFar;
+    ctx.beginPath();
+    ctx.moveTo(596, 118);
+    ctx.lineTo(636, 10);
+    ctx.lineTo(660, 16);
+    ctx.lineTo(646, 118);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255,171,77,0.4)';
+    ctx.beginPath();
+    ctx.moveTo(636, 10);
+    ctx.lineTo(660, 16);
+    ctx.lineTo(648, 34);
+    ctx.closePath();
+    ctx.fill();
+  } else if (kind === 'kelp') {
+    // Tideglum Depths: the sunken bell arch of the drowned grove.
+    ctx.strokeStyle = p.propFar;
+    ctx.lineWidth = 14;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.arc(640, 122, 54, Math.PI, 0);
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(111,214,255,0.4)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(640, 66);
+    ctx.lineTo(640, 92);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(111,214,255,0.55)';
+    ctx.beginPath();
+    ctx.moveTo(630, 92);
+    ctx.quadraticCurveTo(640, 116, 650, 92);
+    ctx.closePath();
+    ctx.fill();
+  } else {
+    // Umbral Crown: a crown of curved horns off the moon's shoulder.
+    ctx.strokeStyle = p.propFar;
+    ctx.lineWidth = 9;
+    ctx.lineCap = 'round';
+    for (let i = 0; i < 5; i++) {
+      const x = 380 + i * 36;
+      const h = 54 + (i % 2) * 26;
+      ctx.beginPath();
+      ctx.moveTo(x, 116);
+      ctx.quadraticCurveTo(x + 12, 116 - h * 0.6, x - 4, 116 - h);
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
 }
 
 function drawGround(ctx, world, t, view) {
@@ -580,6 +667,90 @@ function drawSeedPointer(ctx, world) {
   ctx.restore();
 }
 
+// ------------------------------------------------------ waylight relay
+
+/**
+ * The waylight relay: three seeded lantern posts per grove. Everything reads
+ * gold — the courier's own light — so the objective never shares a hue with a
+ * hazard: magenta brambles, violet snares, ice-blue tides, amber gusts. An
+ * unlit post shows a thin activation ring and a slow pulse; a committing
+ * courier banks a bright charge arc; a lit post burns as a warm landmark.
+ * With reduced motion the pulse is held steady and every ring still draws.
+ */
+function drawWaylights(ctx, world, t, view) {
+  const r = C.WAYLIGHT.r;
+  for (const w of world.waylights) {
+    if (!w.lit) {
+      // The activation ring, then a slow inviting pulse inside it.
+      ctx.globalAlpha = 0.32;
+      ctx.strokeStyle = C.COLORS.gold;
+      ctx.lineWidth = 2.5;
+      circle(ctx, w.x, w.y, C.WAYLIGHT.ring);
+      ctx.stroke();
+      const pulse = view.reducedMotion ? 0.14 : 0.1 + 0.1 * (0.5 + 0.5 * Math.sin(t * 2.2 + w.glow));
+      ctx.globalAlpha = pulse;
+      ctx.fillStyle = C.COLORS.gold;
+      circle(ctx, w.x, w.y, C.WAYLIGHT.ring);
+      ctx.fill();
+      if (w.channel > 0) {
+        // The commit arc: how much of the rekindle is already banked.
+        const frac = Math.min(1, w.channel / C.WAYLIGHT.channel);
+        ctx.globalAlpha = 0.95;
+        ctx.strokeStyle = C.COLORS.goldBright;
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.arc(w.x, w.y, C.WAYLIGHT.ring, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * frac);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // A soft halo: wide and warm once lit, a small glint while unlit.
+    const halo = ctx.createRadialGradient(w.x, w.y, 2, w.x, w.y, w.lit ? 92 : 40);
+    if (w.lit) {
+      halo.addColorStop(0, 'rgba(255,207,107,0.5)');
+      halo.addColorStop(0.5, 'rgba(255,207,107,0.16)');
+      halo.addColorStop(1, 'rgba(255,207,107,0)');
+    } else {
+      halo.addColorStop(0, 'rgba(255,207,107,0.22)');
+      halo.addColorStop(1, 'rgba(255,207,107,0)');
+    }
+    ctx.fillStyle = halo;
+    circle(ctx, w.x, w.y, w.lit ? 92 : 40);
+    ctx.fill();
+
+    // The post itself: dark rim, caps, glass orb — bright when lit.
+    ctx.strokeStyle = 'rgba(5,9,18,0.85)';
+    ctx.lineWidth = 3;
+    circle(ctx, w.x, w.y, r * 0.73);
+    ctx.stroke();
+    ctx.fillStyle = C.COLORS.goldDeep;
+    rrect(ctx, w.x - 10, w.y - r * 0.92, 20, 6, 2.5);
+    ctx.fill();
+    rrect(ctx, w.x - 10, w.y + r * 0.92 - 6, 20, 6, 2.5);
+    ctx.fill();
+    ctx.fillStyle = w.lit ? '#fff4d6' : 'rgba(232,244,255,0.35)';
+    circle(ctx, w.x, w.y, r * 0.5);
+    ctx.fill();
+    ctx.fillStyle = w.lit ? C.COLORS.gold : C.COLORS.goldDeep;
+    circle(ctx, w.x, w.y, r * 0.31);
+    ctx.fill();
+    if (w.lit) {
+      // Four short rays: a lit waylight reads as a landmark at any size.
+      ctx.strokeStyle = 'rgba(255,233,176,0.85)';
+      ctx.lineWidth = 2.5;
+      ctx.lineCap = 'round';
+      for (let i = 0; i < 4; i++) {
+        const a = Math.PI / 4 + (i * Math.PI) / 2;
+        ctx.beginPath();
+        ctx.moveTo(w.x + Math.cos(a) * r * 1.15, w.y + Math.sin(a) * r * 1.15);
+        ctx.lineTo(w.x + Math.cos(a) * r * 1.6, w.y + Math.sin(a) * r * 1.6);
+        ctx.stroke();
+      }
+    }
+  }
+}
+
 // ------------------------------------------------------- biome telegraphs
 
 /** One filled chevron pointing along `dir` (+1 right, -1 left). */
@@ -820,6 +991,7 @@ export function renderWorld(ctx, world, view) {
   drawProps(ctx, world, t, view, 'back');
   drawGround(ctx, world, t, view);
   drawProps(ctx, world, t, view, 'front');
+  drawWaylights(ctx, world, t, view);
   drawSeeds(ctx, world, t);
   drawBloom(ctx, world, t);
   for (const b of world.brambles) drawBramble(ctx, b, t);
@@ -928,6 +1100,18 @@ function drawHUD(ctx, world, t, view) {
   ctx.textBaseline = 'middle';
   ctx.fillText(`${Math.ceil(Math.max(0, world.timeLeft))}s`, 472, 48);
 
+  // The waylight relay's progress, under the timer where no banner or
+  // hazard callout ever reaches.
+  if (world.waylights && world.waylights.length) {
+    ctx.font = '700 13px system-ui, sans-serif';
+    ctx.fillStyle = world.stats.relayDone ? C.COLORS.goldBright : p.accentDim;
+    ctx.fillText(
+      world.stats.relayDone ? 'WAYLIGHT RELAY LIT — 3/3' : `WAYLIGHT RELAY ${world.stats.waylights}/3`,
+      170,
+      80,
+    );
+  }
+
   // Region name above the seed count.
   ctx.textAlign = 'center';
   ctx.font = '700 14px system-ui, sans-serif';
@@ -996,7 +1180,7 @@ function drawHUD(ctx, world, t, view) {
     ctx.fillText(`GATHER ${world.region.seeds} MOONSEEDS`, 640, 310);
     ctx.fillStyle = C.COLORS.dim;
     ctx.font = '400 17px system-ui, sans-serif';
-    ctx.fillText('Graze the brambles to charge the ember — a full ember flares.', 640, 344);
+    ctx.fillText('Graze brambles to charge the ember · rekindle the three waylights as you go.', 640, 344);
     // Each later grove also speaks its own field mechanic once, up front.
     if (world.region.mechanic) {
       ctx.fillStyle = p.accent;
@@ -1340,6 +1524,10 @@ function drawMap(ctx, world, t, view) {
     ctx.fillText(`FIELD — ${region.mechanic.name}`, 364, 646);
   }
   ctx.textAlign = 'right';
+  ctx.fillStyle = C.COLORS.faint;
+  ctx.font = '600 13px system-ui, sans-serif';
+  ctx.fillText('RELAY — 3 WAYLIGHTS', 916, 646);
+  ctx.textAlign = 'right';
   ctx.fillStyle = rec.cleared ? C.COLORS.gold : C.COLORS.goldBright;
   ctx.font = '700 15px system-ui, sans-serif';
   ctx.fillText(rec.cleared ? `BEST ${rec.bestScore} · ${rec.bestGrade}` : 'ENTER TO DEPART', 916, 622);
@@ -1412,13 +1600,14 @@ function drawResults(ctx, world, t, view) {
     ['Best combo', `×${sum.maxCombo}`],
     ['Near misses', `${sum.nearMisses}`],
     ['Ember flares', `${sum.flares} (${sum.stilled} stilled)`],
+    ['Waylight relay', sum.relayDone ? 'LIT — 3/3' : `${sum.waylights}/3`],
     ['Hits taken', `${sum.hitsTaken}`],
     ['Time bonus', `+${sum.timeBonus}`],
   ];
   // The grove's own mechanic stat, right after the near misses.
   if (sum.biomeLabel) rows.splice(5, 0, [sum.biomeLabel, String(sum.biome)]);
   ctx.textAlign = 'left';
-  let y = 256;
+  let y = 252;
   for (const [k, v] of rows) {
     ctx.font = '400 16px system-ui, sans-serif';
     ctx.fillStyle = C.COLORS.dim;
@@ -1428,7 +1617,7 @@ function drawResults(ctx, world, t, view) {
     ctx.textAlign = 'right';
     ctx.fillText(v, 906, y);
     ctx.textAlign = 'left';
-    y += 27;
+    y += 25;
   }
   ctx.textBaseline = 'alphabetic';
   const buttons = getButtons(world.phase, { next: view.nextAvailable });

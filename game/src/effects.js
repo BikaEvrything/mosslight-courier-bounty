@@ -132,6 +132,18 @@ export function eventBurst(effects, ev, reducedMotion) {
       });
       if (ev.hit) effects.shake = 5;
       break;
+    // The waylight relay: a warm pop when a beacon rekindles, a bigger
+    // ring when the whole relay completes. A cancelled commit stays quiet
+    // in the field — its cue is a soft sound only.
+    case 'waylight':
+      burst(effects, ev.x, ev.y, { count: 16, color: '#ffe9b0', speed: 160, life: 0.7, size: 2.8 });
+      burst(effects, ev.x, ev.y, { count: 10, color: '#ffcf6b', speed: 95, life: 0.8, size: 2.4 });
+      break;
+    case 'waylightRelay':
+      burst(effects, ev.x, ev.y, { count: 26, color: '#ffcf6b', speed: 230, life: 0.9, size: 3 });
+      burst(effects, ev.x, ev.y, { count: 16, color: '#ffe9b0', speed: 140, life: 1.1, size: 2.6 });
+      effects.shake = 6;
+      break;
     default:
       break;
   }

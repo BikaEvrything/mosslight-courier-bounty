@@ -83,6 +83,27 @@ export const BLOOM = {
   minPlayerDist: 160,
 };
 
+/**
+ * The Waylight Relay: three lantern posts seeded through every grove. Standing
+ * inside an unlit beacon's ring rekindles it — no new controls, only the
+ * choice to detour and hold the commit while hazards roam. Each beacon pays
+ * points, ember charge and a little time exactly once per run, and lighting
+ * all three pays a relay bonus. One-shot per run, so it can never be farmed.
+ */
+export const WAYLIGHT = {
+  count: 3,
+  r: 26, // the post's lantern core, in px
+  ring: 64, // the activation radius the courier must stand inside
+  channel: 0.9, // seconds inside the ring to rekindle one beacon
+  scorePerBeacon: 90,
+  timePerBeacon: 2.0, // seconds returned per beacon
+  emberPerBeacon: 20, // ember charge per beacon (the ember cap still applies)
+  relayBonus: 250, // lighting all three
+  relayTime: 3.0,
+  minSpacing: 300, // beacons never spawn this close to each other
+  minPlayerDist: 240, // nor this close to the courier's starting point
+};
+
 /** Grade thresholds for a finished run's score. */
 export const GRADES = [
   { min: 3400, letter: 'S' },
